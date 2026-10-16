@@ -7,10 +7,30 @@ services:
       STELLAR_NETWORK: local
       HORIZON_URL: http://stellar:8000
       SOROBAN_RPC_URL: http://stellar:8000/rpc
+      REDIS_SENTINEL_HOSTS: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+      REDIS_MASTER_NAME: mymaster
+      DATABASE_URL: postgres://lumen:lumen@postgres:5432/lumen
     ports:
       - "3000:3000"
     depends_on:
-      - stellar
+      stellar:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      sentinel-1:
+        condition: service_healthy
+      sentinel-2:
+        condition: service_healthy
+      sentinel-3:
+        condition: service_healthy
+      provisioner:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:3000/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   stellar:
     image: stellar/quickstart:testing
@@ -22,6 +42,193 @@ services:
     volumes:
       - stellar-data:/data
     platform: linux/amd64
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  provisioner:
+    image: stellar/quickstart:testing
+    platform: linux/amd64
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "Waiting for Stellar network to be ready..."
+        until curl -sf http://stellar:8000/health >/dev/null 2>&1; do
+          sleep 1
+        done
+        echo "Funding local test accounts..."
+        for account in lumen-test-1 lumen-test-2 lumen-test-3; do
+          curl -sf "http://stellar:8000/friendbot?addr=$$account" >/dev/null 2>&1 || true
+        done
+        echo "Provisioning complete."
+    depends_on:
+      stellar:
+        condition: service_healthy
+    restart: "no"
+
+  redis-master:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-master-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  redis-replica-1:
+    image: redis:7-alpine
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--replicaof",
+        "redis-master",
+        "6379",
+      ]
+    volumes:
+      - redis-replica-1-data:/data
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  redis-replica-2:
+    image: redis:7-alpine
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--replicaof",
+        "redis-master",
+        "6379",
+      ]
+    volumes:
+      - redis-replica-2-data:/data
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  sentinel-1:
+    image: redis:7-alpine
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        cat > /tmp/sentinel.conf <<EOF
+        port 26379
+        sentinel monitor mymaster redis-master 6379 2
+        sentinel down-after-milliseconds mymaster 5000
+        sentinel failover-timeout mymaster 10000
+        sentinel parallel-syncs mymaster 1
+        EOF
+        exec redis-server /tmp/sentinel.conf --sentinel
+    depends_on:
+      redis-master:
+        condition: service_healthy
+      redis-replica-1:
+        condition: service_healthy
+      redis-replica-2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 26379 ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  sentinel-2:
+    image: redis:7-alpine
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        cat > /tmp/sentinel.conf <<EOF
+        port 26379
+        sentinel monitor mymaster redis-master 6379 2
+        sentinel down-after-milliseconds mymaster 5000
+        sentinel failover-timeout mymaster 10000
+        sentinel parallel-syncs mymaster 1
+        EOF
+        exec redis-server /tmp/sentinel.conf --sentinel
+    depends_on:
+      redis-master:
+        condition: service_healthy
+      redis-replica-1:
+        condition: service_healthy
+      redis-replica-2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 26379 ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  sentinel-3:
+    image: redis:7-alpine
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        cat > /tmp/sentinel.conf <<EOF
+        port 26379
+        sentinel monitor mymaster redis-master 6379 2
+        sentinel down-after-milliseconds mymaster 5000
+        sentinel failover-timeout mymaster 10000
+        sentinel parallel-syncs mymaster 1
+        EOF
+        exec redis-server /tmp/sentinel.conf --sentinel
+    depends_on:
+      redis-master:
+        condition: service_healthy
+      redis-replica-1:
+        condition: service_healthy
+      redis-replica-2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 26379 ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: lumen
+      POSTGRES_PASSWORD: lumen
+      POSTGRES_DB: lumen
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lumen -d lumen"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
 
 volumes:
   stellar-data:
+  redis-master-data:
+  redis-replica-1-data:
+  redis-replica-2-data:
+  postgres-data:

@@ -14,9 +14,11 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@handsoff/core": "workspace:*"
+    "@handsoff/core": "workspace:*",
+    "ws": "^8.17.0"
   },
   "devDependencies": {
+    "@types/ws": "^8.5.10",
     "typescript": "^5.4.0",
     "vitest": "^1.6.0"
   }

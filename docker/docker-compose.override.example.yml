@@ -1,0 +1,153 @@
+# Example Docker Compose override file for the Lumen local development stack.
+#
+# Usage:
+#   cp docker/docker-compose.override.example.yml docker/docker-compose.override.yml
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.override.yml up
+#
+# Docker Compose automatically merges `docker-compose.override.yml` with the base
+# `docker-compose.yml` when both live in the same directory, so in most cases you
+# can simply run `docker compose up` from the `docker/` directory after copying
+# this file. The override file lets you customize ports, mount local source for
+# hot reload, and tweak environment variables WITHOUT modifying the base compose
+# file (which is shared with CI and production-like setups).
+#
+# ---------------------------------------------------------------------------
+# Provisioning script
+# ---------------------------------------------------------------------------
+# The base stack ships an auto-provisioning script that funds local test
+# accounts on the standalone Stellar network. It runs as a one-shot service
+# (`provisioner`) once Horizon and the Stellar RPC are healthy.
+#
+#   - Script:      docker/scripts/provision-accounts.sh
+#   - Service:     provisioner (see docker-compose.yml)
+#   - Accounts:    defined via STELLAR_ACCOUNTS / FRIENDBOT_URL env vars
+#   - Re-run:      docker compose run --rm provisioner
+#
+# To add or change funded accounts, override the `provisioner` environment
+# below. Each entry is a comma-separated list of `name:publicKey` pairs; if the
+# public key is omitted the script generates and funds a fresh keypair and
+# writes it to the mounted `./.stellar/accounts` directory.
+#
+# ---------------------------------------------------------------------------
+# Healthcheck timings
+# ---------------------------------------------------------------------------
+# All services define healthchecks with a 30s startup budget. Expected timings
+# on a warm machine (first run may be slower while images are pulled):
+#
+#   postgres      ~2-5s    (pg_isready)
+#   redis         ~1-3s    (redis-cli PING)
+#   redis-sentinel~1-3s    (sentinel reports master)
+#   stellar       ~10-25s   (Horizon + RPC ingest genesis ledger)
+#   provisioner   ~1-5s     (after stellar is healthy)
+#   server        ~5-15s    (waits for postgres, redis, stellar)
+#
+# `docker compose up --wait` returns once every service is healthy, which
+# should complete within ~30s on a warm cache. If a service is still starting,
+# increase the `start_period` for that service below.
+
+services:
+  # -------------------------------------------------------------------------
+  # PostgreSQL
+  # -------------------------------------------------------------------------
+  postgres:
+    # Expose Postgres on a non-default host port to avoid clashing with a
+    # locally installed instance. Change the left-hand side to customize.
+    ports:
+      - "5433:5432"
+    environment:
+      # Override credentials for local development only.
+      POSTGRES_USER: ${POSTGRES_USER:-lumen}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lumen}
+      POSTGRES_DB: ${POSTGRES_DB:-lumen}
+    # Persist data across `docker compose down` (remove the volume to reset).
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # Give Postgres a little more room on cold starts.
+      start_period: 10s
+
+  # -------------------------------------------------------------------------
+  # Redis + Sentinel
+  # -------------------------------------------------------------------------
+  redis:
+    ports:
+      # Expose Redis for local debugging (redis-cli -p 6380).
+      - "6380:6379"
+    healthcheck:
+      start_period: 5s
+
+  redis-sentinel:
+    ports:
+      # Expose Sentinel for local debugging.
+      - "26380:26379"
+    healthcheck:
+      start_period: 5s
+
+  # -------------------------------------------------------------------------
+  # Stellar Quickstart (Horizon + RPC)
+  # -------------------------------------------------------------------------
+  stellar:
+    ports:
+      # Horizon
+      - "8001:8000"
+      # Stellar RPC
+      - "8002:8000"
+    environment:
+      # Use the standalone network with a fast ledger close time for local dev.
+      NETWORK: ${STELLAR_NETWORK:-standalone}
+      ENABLE_SOROBAN_RPC: "true"
+      # Speed up local ledger closes (seconds).
+      LEDGER_CLOSE_TIME: ${STELLAR_LEDGER_CLOSE_TIME:-1}
+    healthcheck:
+      # Stellar ingests the genesis ledger on first boot; allow extra time.
+      start_period: 30s
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # -------------------------------------------------------------------------
+  # Account provisioning (one-shot)
+  # -------------------------------------------------------------------------
+  provisioner:
+    environment:
+      # Comma-separated `name:publicKey` pairs. Omit the public key to have the
+      # script generate and fund a fresh keypair.
+      STELLAR_ACCOUNTS: ${STELLAR_ACCOUNTS:-alice,bob,charlie}
+      # Friendbot endpoint exposed by Stellar Quickstart.
+      FRIENDBOT_URL: ${FRIENDBOT_URL:-http://stellar:8000/friendbot}
+    volumes:
+      # Persist generated keypairs so they survive container restarts.
+      - ./.stellar/accounts:/accounts
+
+  # -------------------------------------------------------------------------
+  # @lumen/server
+  # -------------------------------------------------------------------------
+  server:
+    # Mount local source for hot reload. The base image runs the dev server
+    # (tsx watch / nodemon) so file changes are picked up automatically.
+    volumes:
+      - ../packages/server/src:/app/packages/server/src
+      - ../packages/shared/src:/app/packages/shared/src
+      # Keep node_modules from the image (do not shadow with host copy).
+      - /app/node_modules
+      - /app/packages/server/node_modules
+    environment:
+      NODE_ENV: development
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      # Point the server at the overridden host ports above.
+      DATABASE_URL: ${DATABASE_URL:-postgres://lumen:lumen@postgres:5432/lumen}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      REDIS_SENTINEL_HOSTS: ${REDIS_SENTINEL_HOSTS:-redis-sentinel:26379}
+      REDIS_MASTER_NAME: ${REDIS_MASTER_NAME:-mymaster}
+      STELLAR_HORIZON_URL: ${STELLAR_HORIZON_URL:-http://stellar:8000}
+      STELLAR_RPC_URL: ${STELLAR_RPC_URL:-http://stellar:8000/soroban/rpc}
+      STELLAR_NETWORK_PASSPHRASE: ${STELLAR_NETWORK_PASSPHRASE:-Standalone Network ; February 2017}
+    ports:
+      # Expose the API for local tooling / curl.
+      - "3001:3000"
+    healthcheck:
+      start_period: 15s
+
+volumes:
+  postgres-data:
+    driver: local

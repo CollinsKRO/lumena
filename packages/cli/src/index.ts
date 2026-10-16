@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import { Horizon, TransactionBuilder } from "@stellar/stellar-sdk";
 import fs from "node:fs";
+import { registerAuditCommand } from "./commands/audit.js";
 
 const program = new Command();
 
@@ -460,4 +461,9 @@ cosignCmd
     }
   });
 
-program.parse(process.argv);
+registerAuditCommand(program, {
+  defaultServerUrl: DEFAULT_SERVER_URL,
+  isJsonOutput,
+});
+
+program.parseAsync(process.argv);
