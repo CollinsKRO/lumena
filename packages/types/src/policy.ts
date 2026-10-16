@@ -14,7 +14,7 @@ export type PolicyRule =
   | SessionKeyPolicyRule
   | TimeBoundsRule
   | MaxOperationsRule
-  | FeeLimitRule;
+  | FeeLimitRule
   | ContractAllowlistRule;
 
 export interface SpendLimit {
@@ -66,6 +66,8 @@ export interface MaxOperationsRule {
 export interface FeeLimitRule {
   type: "fee_limit";
   maxFeeStroops: number;
+}
+
 export interface ContractAllowlistRule {
   type: "contract_allowlist";
   allowedContracts: Array<{

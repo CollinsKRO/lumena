@@ -14,7 +14,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@handsoff/core": "workspace:*"
+    "@handsoff/core": "workspace:*",
+    "@lumen/core": "workspace:*",
+    "@lumen/types": "workspace:*",
+    "@stellar/stellar-sdk": "^12.3.0"
   },
   "devDependencies": {
     "typescript": "^5.4.0",

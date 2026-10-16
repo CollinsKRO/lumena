@@ -10,6 +10,7 @@
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
+    "lint:security": "eslint --no-eslintrc --config scripts/linter/eslint.config.js --ext .js,.jsx,.ts,.tsx .",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "changeset": "changeset",
     "version-packages": "changeset version",

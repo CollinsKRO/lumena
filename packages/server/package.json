@@ -12,7 +12,11 @@
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "test:load": "k6 run __tests__/load/main.js",
+    "test:load:cosign": "k6 run __tests__/load/cosign.js",
+    "test:load:fee-bump": "k6 run __tests__/load/fee-bump.js",
+    "test:load:health": "k6 run __tests__/load/health.js"
   },
   "dependencies": {
     "@aws-sdk/client-kms": "^3.1133.0",
@@ -38,5 +42,42 @@
     "fast-check": "^3.23.1",
     "typescript": "^5.8.0",
     "vitest": "^5.0.0"
+  },
+  "k6": {
+    "description": "High-throughput load and concurrency benchmark suite for @lumen/server. Requires the k6 CLI (https://k6.io/docs/get-started/installation/) to be installed and available on PATH.",
+    "scripts": {
+      "test:load": "Runs the full benchmark suite (cosign, fee-bump, health) via __tests__/load/main.js.",
+      "test:load:cosign": "Runs the /cosign load scenario via __tests__/load/cosign.js.",
+      "test:load:fee-bump": "Runs the /fee-bump load scenario via __tests__/load/fee-bump.js.",
+      "test:load:health": "Runs the /health load scenario via __tests__/load/health.js."
+    },
+    "environmentVariables": {
+      "BASE_URL": {
+        "description": "Base URL of the running @lumen/server instance under test.",
+        "default": "http://localhost:3000",
+        "example": "BASE_URL=https://staging.lumen.example.com"
+      },
+      "VUS": {
+        "description": "Number of concurrent virtual users (VUs) to run during the benchmark.",
+        "default": "250",
+        "example": "VUS=500"
+      },
+      "DURATION": {
+        "description": "Sustained duration of the load test (k6 duration string, e.g. 30s, 1m, 5m).",
+        "default": "1m",
+        "example": "DURATION=5m"
+      },
+      "RPS": {
+        "description": "Target requests per second for the constant-arrival-rate executor.",
+        "default": "250",
+        "example": "RPS=500"
+      },
+      "P95_THRESHOLD_MS": {
+        "description": "Acceptance-criteria threshold for the p95 response time in milliseconds; the test fails if exceeded.",
+        "default": "150",
+        "example": "P95_THRESHOLD_MS=150"
+      }
+    },
+    "acceptanceCriteria": "Server maintains < 150ms p95 response time at 250 requests/second on standard compute hardware. Latency percentiles (p50, p95, p99) and throughput are reported by k6 at the end of each run."
   }
 }
