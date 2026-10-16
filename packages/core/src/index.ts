@@ -99,3 +99,10 @@ export {
   type WalletRegistryEntry,
   type RedisWalletRegistryOpts,
 } from "./wallet/registry.js";
+export {
+  exportKeystore,
+  importKeystore,
+  type EncryptedKeystore,
+  type ExportKeystoreOpts,
+  type ImportKeystoreOpts,
+} from "./keys/keystore.js";

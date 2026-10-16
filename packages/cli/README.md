@@ -75,6 +75,36 @@ Queries Horizon for all asset balances held by the specified address. Defaults t
 npx @lumen/cli wallet balance G... --network testnet
 ```
 
+### 7. `lumen wallet export --id <walletId> --out <file.json>`
+Exports a wallet as a password-protected, encrypted keystore file for backup or migration between machines.
+
+```bash
+npx @lumen/cli wallet export --id G... --out ./wallet-keystore.json
+```
+
+The command prompts interactively for a strong password (input is hidden). The password is never written to disk or passed on the command line.
+
+#### Encrypted Keystore Format
+
+The exported file is a standard JSON keystore containing:
+
+- `version`: keystore format version.
+- `id`: the exported wallet ID.
+- `crypto.kdf`: `argon2id`, with a randomly generated `salt` and tuning parameters (`memoryCost`, `timeCost`, `parallelism`).
+- `crypto.cipher`: `aes-256-gcm`, with a random `iv`, the `ciphertext`, and the GCM authentication `tag`.
+
+The wallet secret is encrypted with AES-256-GCM using a key derived from your password via Argon2id. Because GCM is authenticated, any tampering with the file causes decryption to fail.
+
+#### Importing on a Secondary Machine
+
+Copy the exported keystore file to the target machine and import it with the same password:
+
+```bash
+npx @lumen/cli wallet import --in ./wallet-keystore.json
+```
+
+You will be prompted for the password used during export. On success, the wallet is restored and ready for use. Keep the keystore file and password secure; anyone with both can recover the wallet secret.
+
 ### 7. `lumen cosign inspect <xdr>`
 Decodes transaction XDR, displays operation details, and simulates policy checks.
 
