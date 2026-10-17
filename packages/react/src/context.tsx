@@ -90,9 +90,12 @@ export function LumenProvider({
   children,
 }: LumenProviderProps) {
   const isMounted = useIsMounted();
+  // On the server, expose the server-safe proxy so browser crypto / WebAuthn
+  // calls fail with a descriptive error instead of a `ReferenceError`.
+  const safeClient = isBrowserEnvironment() ? client : serverSafeLumenContextValue.client;
 
   return (
-    <LumenContext.Provider value={{ client, isMounted }}>
+    <LumenContext.Provider value={{ client: safeClient, isMounted }}>
       {children}
     </LumenContext.Provider>
   );
