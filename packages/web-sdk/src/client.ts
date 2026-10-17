@@ -191,6 +191,105 @@ export class LumenClient {
     return this.wallets.get(id);
   }
 
+  /**
+   * Imports an existing wallet from a Stellar secret key.
+   *
+   * @param secretKey - the Stellar secret key (starts with `S`)
+   * @returns the wallet address and id
+   */
+  async importWallet(secretKey: string): Promise<{ address: string; id: string }> {
+    if (typeof secretKey !== "string" || !secretKey.startsWith("S")) {
+      throw new Error(
+        "Invalid secret key: expected a Stellar secret key starting with 'S'.",
+      );
+    }
+
+    let keypair: Keypair;
+    try {
+      keypair = Keypair.fromSecret(secretKey);
+    } catch (err) {
+      throw new Error(
+        `Invalid secret key: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    const address = keypair.publicKey();
+    const wallet = new Wallet({
+      client: this.client,
+      serverPublicKey: this.serverPublicKey,
+      serverUrl: this.serverUrl,
+      ownerKeypair: keypair,
+    });
+    (wallet as any)._address = address;
+
+    const id = address;
+    this.wallets.set(id, wallet);
+
+    return { address, id };
+  }
+
+  /**
+   * Exports the Stellar secret key for the given wallet so the user can back
+   * it up. The returned value starts with `S`.
+   *
+   * @param id - wallet id
+   */
+  async exportWallet(id: string): Promise<string> {
+    const wallet = this.wallets.get(id);
+    if (!wallet) throw new Error(`Wallet not found: ${id}`);
+
+    const keypair = (wallet as any).ownerKeypair as Keypair | undefined;
+    if (!keypair) {
+      throw new Error(
+        `Wallet ${id} has no exportable secret key (it may be server-sponsored or passkey-backed).`,
+      );
+    }
+
+    return keypair.secret();
+  }
+
+  /**
+   * Returns the transaction history for the given wallet.
+   *
+   * When `serverUrl` is configured, queries
+   * `GET /wallet/:address/transactions` on the backend; otherwise falls back
+   * to Horizon via `client.horizon.transactions().forAccount(address)`.
+   */
+  async getTransactions(
+    walletId: string,
+    opts?: { limit?: number; cursor?: string; order?: "asc" | "desc" },
+  ): Promise<any[]> {
+    const wallet = this.wallets.get(walletId);
+    if (!wallet) throw new Error(`Wallet not found: ${walletId}`);
+
+    const address = (wallet as any)._address as string | undefined;
+    if (!address) {
+      throw new Error(`Unable to resolve address for wallet: ${walletId}`);
+    }
+
+    if (this.serverUrl) {
+      const params = new URLSearchParams();
+      if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+      if (opts?.cursor !== undefined) params.set("cursor", opts.cursor);
+      if (opts?.order !== undefined) params.set("order", opts.order);
+      const query = params.toString();
+      const path = `/wallet/${encodeURIComponent(address)}/transactions${query ? `?${query}` : ""}`;
+
+      const result = await this.request<any>("GET", path);
+      if (Array.isArray(result)) return result;
+      if (result && Array.isArray(result.records)) return result.records;
+      return [];
+    }
+
+    let builder = this.client.horizon.transactions().forAccount(address);
+    if (opts?.limit !== undefined) builder = builder.limit(opts.limit);
+    if (opts?.cursor !== undefined) builder = builder.cursor(opts.cursor);
+    if (opts?.order !== undefined) builder = builder.order(opts.order);
+
+    const page = await builder.call();
+    return page.records;
+  }
+
   async getBalance(id: string, assetCode?: string): Promise<string> {
     const wallet = this.wallets.get(id);
     if (!wallet) throw new Error(`Wallet not found: ${id}`);
