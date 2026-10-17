@@ -36,6 +36,48 @@ export interface ContractInvokeOptions extends ContractCommandOptions {
   args?: string[];
 }
 
+/**
+ * Options for the policy-guard registry helpers (`#222`).
+ */
+export interface PolicyGuardOptions extends ContractCommandOptions {
+  /** Contract ID to register / verify / validate. */
+  target?: string;
+  /** Hex-encoded WASM hash of the target contract. */
+  wasmHash?: string;
+  /** Comma-separated list of call targets to validate. */
+  targets?: string;
+}
+
+/**
+ * Options for the oracle spend-limit helper (`#223`).
+ */
+export interface OracleSpendLimitOptions extends ContractCommandOptions {
+  /** Asset contract ID (or `native` for XLM). */
+  asset?: string;
+  /** Raw asset amount (in stroops / base units). */
+  amount?: string;
+  /** Spend limit expressed in USD (7-decimal fixed point). */
+  limit?: string;
+}
+
+/**
+ * Options for the upgradeable proxy helpers (`#224`).
+ */
+export interface ProxyOptions extends ContractCommandOptions {
+  /** Hex-encoded WASM hash of the new implementation. */
+  wasmHash?: string;
+  /** Proposal ID for approve / execute. */
+  proposalId?: string;
+}
+
+/**
+ * Options for the inheritance vault helpers (`#225`).
+ */
+export interface InheritanceOptions extends ContractCommandOptions {
+  /** Beneficiary account address. */
+  beneficiary?: string;
+}
+
 const DEFAULT_NETWORK = 'testnet';
 
 /**
@@ -242,6 +284,157 @@ export async function invokeContract(
 }
 
 /**
+ * Register a contract in the policy-guard verified registry (`#222`).
+ */
+export async function policyGuardRegister(
+  contractId: string,
+  options: PolicyGuardOptions = {},
+): Promise<unknown> {
+  if (!options.target) {
+    throw new Error('A target contract ID is required. Pass --target <contractId>.');
+  }
+  if (!options.wasmHash) {
+    throw new Error('A WASM hash is required. Pass --wasm-hash <hex>.');
+  }
+  return invokeContract(contractId, 'register', {
+    ...options,
+    args: [options.target, options.wasmHash],
+  });
+}
+
+/**
+ * Verify a contract against the policy-guard registry (`#222`).
+ */
+export async function policyGuardVerify(
+  contractId: string,
+  options: PolicyGuardOptions = {},
+): Promise<unknown> {
+  if (!options.target) {
+    throw new Error('A target contract ID is required. Pass --target <contractId>.');
+  }
+  return invokeContract(contractId, 'verify', {
+    ...options,
+    args: [options.target],
+  });
+}
+
+/**
+ * Validate a batch of call targets against the policy-guard registry (`#222`).
+ */
+export async function policyGuardValidate(
+  contractId: string,
+  options: PolicyGuardOptions = {},
+): Promise<unknown> {
+  const targets = (options.targets || options.target || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+  if (targets.length === 0) {
+    throw new Error('At least one target is required. Pass --targets <id,id>.');
+  }
+  return invokeContract(contractId, 'validate', {
+    ...options,
+    args: targets,
+  });
+}
+
+/**
+ * Check a spend against the oracle-backed USD limit (`#223`).
+ */
+export async function oracleCheckSpend(
+  contractId: string,
+  options: OracleSpendLimitOptions = {},
+): Promise<unknown> {
+  if (!options.asset) {
+    throw new Error('An asset is required. Pass --asset <contractId|native>.');
+  }
+  if (!options.amount) {
+    throw new Error('An amount is required. Pass --amount <value>.');
+  }
+  if (!options.limit) {
+    throw new Error('A USD limit is required. Pass --limit <usd>.');
+  }
+  return invokeContract(contractId, 'check_spend', {
+    ...options,
+    args: [options.asset, options.amount, options.limit],
+  });
+}
+
+/**
+ * Propose a proxy upgrade behind the timelock (`#224`).
+ */
+export async function proxyProposeUpgrade(
+  contractId: string,
+  options: ProxyOptions = {},
+): Promise<unknown> {
+  if (!options.wasmHash) {
+    throw new Error('A WASM hash is required. Pass --wasm-hash <hex>.');
+  }
+  return invokeContract(contractId, 'propose_upgrade', {
+    ...options,
+    args: [options.wasmHash],
+  });
+}
+
+/**
+ * Approve a pending proxy upgrade proposal (`#224`).
+ */
+export async function proxyApproveUpgrade(
+  contractId: string,
+  options: ProxyOptions = {},
+): Promise<unknown> {
+  if (!options.proposalId) {
+    throw new Error('A proposal ID is required. Pass --proposal-id <id>.');
+  }
+  return invokeContract(contractId, 'approve_upgrade', {
+    ...options,
+    args: [options.proposalId],
+  });
+}
+
+/**
+ * Execute a timelocked proxy upgrade (`#224`).
+ */
+export async function proxyExecuteUpgrade(
+  contractId: string,
+  options: ProxyOptions = {},
+): Promise<unknown> {
+  if (!options.proposalId) {
+    throw new Error('A proposal ID is required. Pass --proposal-id <id>.');
+  }
+  return invokeContract(contractId, 'execute_upgrade', {
+    ...options,
+    args: [options.proposalId],
+  });
+}
+
+/**
+ * Record a heartbeat on the inheritance vault (`#225`).
+ */
+export async function inheritanceHeartbeat(
+  contractId: string,
+  options: InheritanceOptions = {},
+): Promise<unknown> {
+  return invokeContract(contractId, 'heartbeat', { ...options, args: [] });
+}
+
+/**
+ * Claim custody from the inheritance vault once dormant (`#225`).
+ */
+export async function inheritanceClaim(
+  contractId: string,
+  options: InheritanceOptions = {},
+): Promise<unknown> {
+  if (!options.beneficiary) {
+    throw new Error('A beneficiary is required. Pass --beneficiary <address>.');
+  }
+  return invokeContract(contractId, 'claim', {
+    ...options,
+    args: [options.beneficiary],
+  });
+}
+
+/**
  * Resolve the network passphrase for the configured network.
  */
 function resolveNetworkPassphrase(options: ContractCommandOptions): string {
@@ -423,6 +616,216 @@ export function registerContractCommand(program: Command): Command {
         }
       },
     );
+
+  contract
+    .command('policy-guard-register <contractId>')
+    .description('Register a verified contract in the policy-guard registry (#222)')
+    .option('--target <contractId>', 'Contract ID to register')
+    .option('--wasm-hash <hex>', 'Hex-encoded WASM hash of the target')
+    .option('--server <url>', 'Soroban RPC server URL')
+    .option('--network <name>', 'Target network (testnet, futurenet, mainnet)')
+    .option('--secret <key>', 'Secret key used to sign the invocation')
+    .option('--json', 'Emit machine-readable JSON output')
+    .action(async (contractId: string, options: PolicyGuardOptions) => {
+      try {
+        const result = await policyGuardRegister(contractId, options);
+        emit({ result }, options);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (options.json) {
+          emit({ error: message }, options);
+        } else {
+          process.stderr.write(`Error: ${message}\n`);
+        }
+        process.exitCode = 1;
+      }
+    });
+
+  contract
+    .command('policy-guard-verify <contractId>')
+    .description('Verify a contract against the policy-guard registry (#222)')
+    .option('--target <contractId>', 'Contract ID to verify')
+    .option('--server <url>', 'Soroban RPC server URL')
+    .option('--network <name>', 'Target network (testnet, futurenet, mainnet)')
+    .option('--secret <key>', 'Secret key used to sign the invocation')
+    .option('--json', 'Emit machine-readable JSON output')
+    .action(async (contractId: string, options: PolicyGuardOptions) => {
+      try {
+        const result = await policyGuardVerify(contractId, options);
+        emit({ result }, options);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (options.json) {
+          emit({ error: message }, options);
+        } else {
+          process.stderr.write(`Error: ${message}\n`);
+        }
+        process.exitCode = 1;
+      }
+    });
+
+  contract
+    .command('policy-guard-validate <contractId>')
+    .description('Validate call targets against the policy-guard registry (#222)')
+    .option('--targets <ids>', 'Comma-separated list of call targets')
+    .option('--target <contractId>', 'Single call target')
+    .option('--server <url>', 'Soroban RPC server URL')
+    .option('--network <name>', 'Target network (testnet, futurenet, mainnet)')
+    .option('--secret <key>', 'Secret key used to sign the invocation')
+    .option('--json', 'Emit machine-readable JSON output')
+    .action(async (contractId: string, options: PolicyGuardOptions) => {
+      try {
+        const result = await policyGuardValidate(contractId, options);
+        emit({ result }, options);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (options.json) {
+          emit({ error: message }, options);
+        } else {
+          process.stderr.write(`Error: ${message}\n`);
+        }
+        process.exitCode = 1;
+      }
+    });
+
+  contract
+    .command('oracle-check-spend <contractId>')
+    .description('Check a spend against the oracle USD limit (#223)')
+    .option('--asset <id>', 'Asset contract ID or "native" for XLM')
+    .option('--amount <value>', 'Raw asset amount in base units')
+    .option('--limit <usd>', 'USD spend limit (7-decimal fixed point)')
+    .option('--server <url>', 'Soroban RPC server URL')
+    .option('--network <name>', 'Target network (testnet, futurenet, mainnet)')
+    .option('--secret <key>', 'Secret key used to sign the invocation')
+    .option('--json', 'Emit machine-readable JSON output')
+    .action(async (contractId: string, options: OracleSpendLimitOptions) => {
+      try {
+        const result = await oracleCheckSpend(contractId, options);
+        emit({ result }, options);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (options.json) {
+          emit({ error: message }, options);
+        } else {
+          process.stderr.write(`Error: ${message}\n`);
+        }
+        process.exitCode = 1;
+      }
+    });
+
+  contract
+    .command('proxy-propose-upgrade <contractId>')
+    .description('Propose a timelocked proxy upgrade (#224)')
+    .option('--wasm-hash <hex>', 'Hex-encoded WASM hash of the new implementation')
+    .option('--server <url>', 'Soroban RPC server URL')
+    .option('--network <name>', 'Target network (testnet, futurenet, mainnet)')
+    .option('--secret <key>', 'Secret key used to sign the invocation')
+    .option('--json', 'Emit machine-readable JSON output')
+    .action(async (contractId: string, options: ProxyOptions) => {
+      try {
+        const result = await proxyProposeUpgrade(contractId, options);
+        emit({ result }, options);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (options.json) {
+          emit({ error: message }, options);
+        } else {
+          process.stderr.write(`Error: ${message}\n`);
+        }
+        process.exitCode = 1;
+      }
+    });
+
+  contract
+    .command('proxy-approve-upgrade <contractId>')
+    .description('Approve a pending proxy upgrade proposal (#224)')
+    .option('--proposal-id <id>', 'Proposal ID to approve')
+    .option('--server <url>', 'Soroban RPC server URL')
+    .option('--network <name>', 'Target network (testnet, futurenet, mainnet)')
+    .option('--secret <key>', 'Secret key used to sign the invocation')
+    .option('--json', 'Emit machine-readable JSON output')
+    .action(async (contractId: string, options: ProxyOptions) => {
+      try {
+        const result = await proxyApproveUpgrade(contractId, options);
+        emit({ result }, options);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (options.json) {
+          emit({ error: message }, options);
+        } else {
+          process.stderr.write(`Error: ${message}\n`);
+        }
+        process.exitCode = 1;
+      }
+    });
+
+  contract
+    .command('proxy-execute-upgrade <contractId>')
+    .description('Execute a timelocked proxy upgrade (#224)')
+    .option('--proposal-id <id>', 'Proposal ID to execute')
+    .option('--server <url>', 'Soroban RPC server URL')
+    .option('--network <name>', 'Target network (testnet, futurenet, mainnet)')
+    .option('--secret <key>', 'Secret key used to sign the invocation')
+    .option('--json', 'Emit machine-readable JSON output')
+    .action(async (contractId: string, options: ProxyOptions) => {
+      try {
+        const result = await proxyExecuteUpgrade(contractId, options);
+        emit({ result }, options);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (options.json) {
+          emit({ error: message }, options);
+        } else {
+          process.stderr.write(`Error: ${message}\n`);
+        }
+        process.exitCode = 1;
+      }
+    });
+
+  contract
+    .command('inheritance-heartbeat <contractId>')
+    .description('Record a heartbeat on the inheritance vault (#225)')
+    .option('--server <url>', 'Soroban RPC server URL')
+    .option('--network <name>', 'Target network (testnet, futurenet, mainnet)')
+    .option('--secret <key>', 'Secret key used to sign the invocation')
+    .option('--json', 'Emit machine-readable JSON output')
+    .action(async (contractId: string, options: InheritanceOptions) => {
+      try {
+        const result = await inheritanceHeartbeat(contractId, options);
+        emit({ result }, options);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (options.json) {
+          emit({ error: message }, options);
+        } else {
+          process.stderr.write(`Error: ${message}\n`);
+        }
+        process.exitCode = 1;
+      }
+    });
+
+  contract
+    .command('inheritance-claim <contractId>')
+    .description('Claim custody from the inheritance vault once dormant (#225)')
+    .option('--beneficiary <address>', 'Beneficiary account address')
+    .option('--server <url>', 'Soroban RPC server URL')
+    .option('--network <name>', 'Target network (testnet, futurenet, mainnet)')
+    .option('--secret <key>', 'Secret key used to sign the invocation')
+    .option('--json', 'Emit machine-readable JSON output')
+    .action(async (contractId: string, options: InheritanceOptions) => {
+      try {
+        const result = await inheritanceClaim(contractId, options);
+        emit({ result }, options);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (options.json) {
+          emit({ error: message }, options);
+        } else {
+          process.stderr.write(`Error: ${message}\n`);
+        }
+        process.exitCode = 1;
+      }
+    });
 
   return contract;
 }

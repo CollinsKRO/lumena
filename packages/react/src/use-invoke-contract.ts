@@ -14,6 +14,21 @@ export interface InvokeContractResult {
   hash: string;
 }
 
+export interface UseInvokeContractOptions {
+  /**
+   * When set, the target contract is validated against the policy-guard
+   * registry before the invocation is dispatched (#222). Unregistered
+   * contracts are rejected without submitting a transaction.
+   */
+  policyGuardId?: string;
+  /**
+   * Optional explicit list of authorized call targets. When provided, the
+   * target contract must be present in this list in addition to being
+   * registered in the policy-guard registry.
+   */
+  authorizedTargets?: string[];
+}
+
 export interface UseInvokeContractResult {
   invoke: (params: InvokeContractParams) => Promise<InvokeContractResult>;
   loading: boolean;
@@ -22,8 +37,11 @@ export interface UseInvokeContractResult {
   reset: () => void;
 }
 
-export function useInvokeContract(): UseInvokeContractResult {
+export function useInvokeContract(
+  options: UseInvokeContractOptions = {},
+): UseInvokeContractResult {
   const { client } = useLumen();
+  const { policyGuardId, authorizedTargets } = options;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const [data, setData] = useState<InvokeContractResult>();
@@ -33,6 +51,22 @@ export function useInvokeContract(): UseInvokeContractResult {
       setLoading(true);
       setError(null);
       try {
+        if (policyGuardId) {
+          if (authorizedTargets && !authorizedTargets.includes(contractId)) {
+            throw new Error(
+              `Contract ${contractId} is not an authorized call target`,
+            );
+          }
+          const registered = await client.isContractRegistered(
+            policyGuardId,
+            contractId,
+          );
+          if (!registered) {
+            throw new Error(
+              `Contract ${contractId} is not registered in policy-guard ${policyGuardId}`,
+            );
+          }
+        }
         const result = await client.invokeContract(walletId, contractId, method, args, fee);
         setData(result);
         return result;
@@ -44,7 +78,7 @@ export function useInvokeContract(): UseInvokeContractResult {
         setLoading(false);
       }
     },
-    [client],
+    [client, policyGuardId, authorizedTargets],
   );
 
   const reset = useCallback(() => {

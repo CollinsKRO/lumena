@@ -38,6 +38,42 @@ export interface WalletRegistry {
   list(): Promise<string[]> | string[];
 }
 
+/** Result of validating a cross-contract invocation against the policy-guard registry. */
+export interface CrossContractValidationResult {
+  /** Whether every call target is registered and verified in the policy-guard. */
+  allowed: boolean;
+  /** The call targets that were rejected (empty when `allowed` is true). */
+  rejectedTargets: string[];
+}
+
+/** Result of a USD spend-limit check performed via the oracle consumer contract. */
+export interface UsdSpendLimitResult {
+  /** Whether the spend is within the configured USD limit. */
+  allowed: boolean;
+  /** USD value of the spend, expressed in the oracle's base units as a string. */
+  usdValue: string;
+  /** The configured USD limit, expressed in the oracle's base units as a string. */
+  limit: string;
+}
+
+/** Options for requesting a proxy upgrade (issue #224). */
+export interface ProxyUpgradeRequest {
+  /** Address of the proxy contract to upgrade. */
+  proxyContractId: string;
+  /** Hex-encoded hash of the new contract WASM. */
+  newWasmHash: string;
+  /** Optional fee override for the invocation transaction. */
+  fee?: string;
+}
+
+/** Result of an inheritance heartbeat or claim (issue #225). */
+export interface InheritanceStatus {
+  /** The last recorded heartbeat timestamp (unix seconds). */
+  lastHeartbeat: number;
+  /** The configured dormancy period in seconds. */
+  dormancyPeriod: number;
+}
+
 export class InMemoryWalletRegistry implements WalletRegistry {
   private addresses: string[] = [];
 
@@ -340,6 +376,200 @@ export class Wallet {
     }
 
     throw new Error(`Contract invocation failed: ${result.hash}`);
+  }
+
+  /**
+   * Validates a set of cross-contract call targets against the policy-guard
+   * registry (issue #222). Unregistered targets are rejected; registered
+   * targets are permitted to execute.
+   *
+   * @param policyGuardContractId Address of the deployed policy-guard contract.
+   * @param callTargets Contract addresses that the batch will invoke.
+   */
+  async validateCrossContractInvocation(
+    policyGuardContractId: string,
+    callTargets: string[],
+  ): Promise<CrossContractValidationResult> {
+    if (callTargets.length === 0) {
+      return { allowed: true, rejectedTargets: [] };
+    }
+
+    const contractClient = new ContractClient(this.client);
+    const rejectedTargets: string[] = [];
+
+    for (const target of callTargets) {
+      const simulation = await contractClient.simulate(
+        {
+          contractId: policyGuardContractId,
+          method: "is_registered",
+          args: [{ type: "address", value: target }],
+        },
+        this.address,
+      );
+
+      if (!this.isTruthySimulationResult(simulation)) {
+        rejectedTargets.push(target);
+      }
+    }
+
+    return { allowed: rejectedTargets.length === 0, rejectedTargets };
+  }
+
+  /**
+   * Invokes a contract only after validating every cross-contract call target
+   * against the policy-guard registry (issue #222). Throws when any target is
+   * unregistered so that execution is never dispatched.
+   */
+  async invokeContractWithPolicyGuard(
+    policyGuardContractId: string,
+    contractId: string,
+    method: string,
+    args?: ScValInput[],
+    callTargets: string[] = [],
+    fee?: string,
+  ): Promise<{ hash: string }> {
+    const validation = await this.validateCrossContractInvocation(
+      policyGuardContractId,
+      callTargets,
+    );
+    if (!validation.allowed) {
+      this.recordPolicyViolation();
+      throw new Error(
+        `Cross-contract invocation rejected: unregistered targets ${validation.rejectedTargets.join(", ")}`,
+      );
+    }
+
+    return this.invokeContract(contractId, method, args, fee);
+  }
+
+  /**
+   * Checks whether a spend is within the configured USD limit using the oracle
+   * consumer contract (issue #223). Fails safely when the oracle price is stale
+   * or missing by treating the spend as disallowed.
+   *
+   * @param oracleSpendLimitContractId Address of the oracle-spend-limit contract.
+   * @param asset Address (or symbol) of the asset being spent.
+   * @param amount Amount of the asset, in its smallest unit, as a string.
+   */
+  async checkUsdSpendLimit(
+    oracleSpendLimitContractId: string,
+    asset: string,
+    amount: string,
+  ): Promise<UsdSpendLimitResult> {
+    const contractClient = new ContractClient(this.client);
+    const simulation = await contractClient.simulate(
+      {
+        contractId: oracleSpendLimitContractId,
+        method: "check_spend_limit",
+        args: [
+          { type: "address", value: this.address },
+          { type: "address", value: asset },
+          { type: "i128", value: amount },
+        ],
+      },
+      this.address,
+    );
+
+    const parsed = this.parseUsdSpendLimitResult(simulation);
+    if (!parsed) {
+      // Fail safely: a stale or missing oracle price must never authorize a spend.
+      return { allowed: false, usdValue: "0", limit: "0" };
+    }
+    return parsed;
+  }
+
+  /**
+   * Requests an upgrade of a proxy contract (issue #224). The proxy enforces
+   * multi-sig approval and a mandatory timelock on-chain; this method only
+   * submits the upgrade request.
+   */
+  async requestProxyUpgrade(request: ProxyUpgradeRequest): Promise<{ hash: string }> {
+    return this.invokeContract(
+      request.proxyContractId,
+      "propose_upgrade",
+      [{ type: "bytes", value: request.newWasmHash }],
+      request.fee,
+    );
+  }
+
+  /**
+   * Sends an inheritance heartbeat to the vault contract (issue #225),
+   * resetting the dormancy timer.
+   */
+  async sendInheritanceHeartbeat(inheritanceContractId: string): Promise<{ hash: string }> {
+    return this.invokeContract(inheritanceContractId, "heartbeat");
+  }
+
+  /**
+   * Claims custody of an inheritance vault as the designated beneficiary
+   * (issue #225). The contract rejects the claim while the heartbeat is active.
+   */
+  async claimInheritance(inheritanceContractId: string): Promise<{ hash: string }> {
+    return this.invokeContract(inheritanceContractId, "claim");
+  }
+
+  /** Reads the current inheritance vault status (issue #225). */
+  async getInheritanceStatus(inheritanceContractId: string): Promise<InheritanceStatus> {
+    const contractClient = new ContractClient(this.client);
+    const simulation = await contractClient.simulate(
+      { contractId: inheritanceContractId, method: "get_status" },
+      this.address,
+    );
+
+    const parsed = this.parseInheritanceStatus(simulation);
+    if (!parsed) {
+      throw new Error("Unable to read inheritance status from contract");
+    }
+    return parsed;
+  }
+
+  private isTruthySimulationResult(simulation: ContractSimulationResult): boolean {
+    const result: unknown = (simulation as any)?.result;
+    if (typeof result === "boolean") return result;
+    if (typeof result === "string") return result === "true" || result === "1";
+    if (typeof result === "object" && result !== null && "value" in result) {
+      const value = (result as any).value;
+      if (typeof value === "boolean") return value;
+      if (typeof value === "string") return value === "true" || value === "1";
+    }
+    return false;
+  }
+
+  private parseUsdSpendLimitResult(
+    simulation: ContractSimulationResult,
+  ): UsdSpendLimitResult | null {
+    const result: unknown = (simulation as any)?.result;
+    if (typeof result !== "object" || result === null) return null;
+
+    const allowed = (result as any).allowed;
+    const usdValue = (result as any).usd_value ?? (result as any).usdValue;
+    const limit = (result as any).limit;
+
+    if (typeof allowed !== "boolean") return null;
+    if (usdValue === undefined || limit === undefined) return null;
+
+    return {
+      allowed,
+      usdValue: String(usdValue),
+      limit: String(limit),
+    };
+  }
+
+  private parseInheritanceStatus(
+    simulation: ContractSimulationResult,
+  ): InheritanceStatus | null {
+    const result: unknown = (simulation as any)?.result;
+    if (typeof result !== "object" || result === null) return null;
+
+    const lastHeartbeat = (result as any).last_heartbeat ?? (result as any).lastHeartbeat;
+    const dormancyPeriod = (result as any).dormancy_period ?? (result as any).dormancyPeriod;
+
+    if (lastHeartbeat === undefined || dormancyPeriod === undefined) return null;
+
+    return {
+      lastHeartbeat: Number(lastHeartbeat),
+      dormancyPeriod: Number(dormancyPeriod),
+    };
   }
 
   private recordTransaction(asset: Asset | undefined, amount: string | undefined): void {
