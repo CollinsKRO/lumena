@@ -25,6 +25,28 @@ export interface EvaluateResult {
   reason?: string;
 }
 
+export interface RuleEvaluationResult {
+  index: number;
+  type: PolicyRule["type"];
+  approved: boolean;
+  reason?: string;
+  /** Remaining allowance after this rule is applied, when applicable. */
+  remaining?: {
+    /** Remaining velocity transactions within the window. */
+    velocityRemaining?: number;
+    /** Remaining daily spend allowance for the rule's asset. */
+    spendRemaining?: string;
+    /** Remaining session-key spend allowance. */
+    sessionSpendRemaining?: string;
+  };
+}
+
+export interface EvaluateWithDetailsResult {
+  approved: boolean;
+  reason?: string;
+  results: RuleEvaluationResult[];
+}
+
 export interface PolicyEngineOptions {
   defaultPolicy?: "allow" | "deny";
 }
@@ -80,6 +102,210 @@ export class PolicyEngine {
     }
 
     return { approved: true };
+  }
+
+  /**
+   * Evaluate every rule in a wallet's policy and return the individual result
+   * for each one, instead of short-circuiting on the first failure.
+   *
+   * This is intended for offline/dry-run tooling (e.g. the CLI policy
+   * simulation command) that needs to display rule-by-rule outcomes.
+   *
+   * Note: this method is side-effect free. It does not mutate spend/velocity
+   * tracking state, so it can be safely used for simulation.
+   */
+  evaluateWithDetails(opts: EvaluateOpts): EvaluateWithDetailsResult {
+    const policy = this.policies.get(opts.walletAddress);
+
+    if (!policy) {
+      const approved = this.defaultPolicy === "allow";
+      return {
+        approved,
+        reason: approved
+          ? undefined
+          : `No policy found for wallet ${opts.walletAddress}`,
+        results: [],
+      };
+    }
+
+    const results: RuleEvaluationResult[] = [];
+    let firstFailure: string | undefined;
+
+    policy.rules.forEach((rule, index) => {
+      const result = this.evaluateRuleDryRun(rule, opts);
+      const entry: RuleEvaluationResult = {
+        index,
+        type: rule.type,
+        approved: result.approved,
+        reason: result.reason,
+        remaining: result.remaining,
+      };
+      results.push(entry);
+
+      if (!result.approved && firstFailure === undefined) {
+        firstFailure = result.reason;
+      }
+    });
+
+    const approved = results.every((r) => r.approved);
+    return {
+      approved,
+      reason: approved ? undefined : firstFailure,
+      results,
+    };
+  }
+
+  /**
+   * Evaluate a single rule without mutating tracking state, returning the
+   * result plus any remaining allowance information.
+   */
+  private evaluateRuleDryRun(
+    rule: PolicyRule,
+    opts: EvaluateOpts,
+  ): { approved: boolean; reason?: string; remaining?: RuleEvaluationResult["remaining"] } {
+    switch (rule.type) {
+      case "velocity":
+        return this.evaluateVelocityDryRun(rule as VelocityRule, opts);
+      case "spend_limit":
+        return this.evaluateSpendLimitDryRun(rule as SpendLimit, opts);
+      case "session_key":
+        return this.evaluateSessionKeyDryRun(rule as SessionKeyPolicyRule, opts);
+      default: {
+        const result = this.evaluateRule(rule, opts);
+        return { approved: result.approved, reason: result.reason };
+      }
+    }
+  }
+
+  private evaluateVelocityDryRun(
+    rule: VelocityRule,
+    opts: EvaluateOpts,
+  ): { approved: boolean; reason?: string; remaining?: RuleEvaluationResult["remaining"] } {
+    const { walletAddress } = opts;
+    const txTimes = this.velocityTracking.get(walletAddress) ?? [];
+
+    const windowMs = rule.windowMinutes * 60 * 1000;
+    const cutoff = Date.now() - windowMs;
+    const recentCount = txTimes.filter((t) => t > cutoff).length;
+
+    // The simulated transaction would be the (recentCount + 1)-th in the window.
+    const projectedCount = recentCount + 1;
+    const velocityRemaining = Math.max(0, rule.maxTransactions - recentCount);
+
+    if (projectedCount > rule.maxTransactions) {
+      return {
+        approved: false,
+        reason: `Too many transactions (${projectedCount}) in ${rule.windowMinutes}-minute window (max: ${rule.maxTransactions})`,
+        remaining: { velocityRemaining },
+      };
+    }
+
+    return { approved: true, remaining: { velocityRemaining } };
+  }
+
+  private evaluateSpendLimitDryRun(
+    rule: SpendLimit,
+    opts: EvaluateOpts,
+  ): { approved: boolean; reason?: string; remaining?: RuleEvaluationResult["remaining"] } {
+    const { walletAddress } = opts;
+    const targetAsset = this.getAssetIdentifier(rule.asset);
+
+    let txAmount = 0;
+    let matchedOps = 0;
+
+    for (const op of opts.transaction.operations) {
+      if (!("amount" in op) || typeof (op as { amount: unknown }).amount !== "string") {
+        continue;
+      }
+
+      const typedOp = op as
+        | Operation.Payment
+        | Operation.PathPaymentStrictSend
+        | Operation.PathPaymentStrictReceive;
+      const opAsset: Asset | undefined =
+        "asset" in typedOp
+          ? (typedOp as Operation.Payment).asset
+          : "sendAsset" in typedOp
+            ? (typedOp as Operation.PathPaymentStrictSend).sendAsset
+            : "destAsset" in typedOp
+              ? (typedOp as Operation.PathPaymentStrictReceive).destAsset
+              : undefined;
+      const opAssetId = this.getAssetIdentifier(opAsset);
+
+      if (opAssetId === targetAsset) {
+        txAmount += parseFloat((typedOp as { amount: string }).amount);
+        matchedOps++;
+      }
+    }
+
+    if (matchedOps === 0) {
+      return { approved: true };
+    }
+
+    const maxPerTx = parseFloat(rule.maxPerTx);
+    const maxDaily = parseFloat(rule.maxDaily);
+
+    if (txAmount > maxPerTx) {
+      return {
+        approved: false,
+        reason: `Transaction spending ${txAmount} exceeds per-tx limit ${rule.maxPerTx}`,
+      };
+    }
+
+    const today = new Date().toISOString().split("T")[0];
+    const trackKey = `${today}:${targetAsset}`;
+    const track = this.spendTracking.get(walletAddress)?.get(trackKey);
+    const dailyTotal = track?.dailyTotal ?? 0;
+    const projectedDaily = dailyTotal + txAmount;
+    const spendRemaining = Math.max(0, maxDaily - projectedDaily);
+
+    if (projectedDaily > maxDaily) {
+      return {
+        approved: false,
+        reason: `Daily spending ${projectedDaily} exceeds limit ${rule.maxDaily}`,
+        remaining: { spendRemaining: spendRemaining.toString() },
+      };
+    }
+
+    return {
+      approved: true,
+      remaining: { spendRemaining: spendRemaining.toString() },
+    };
+  }
+
+  private evaluateSessionKeyDryRun(
+    rule: SessionKeyPolicyRule,
+    opts: EvaluateOpts,
+  ): { approved: boolean; reason?: string; remaining?: RuleEvaluationResult["remaining"] } {
+    const now = Date.now();
+    const expiryMs = rule.expiresAt < 1e11 ? rule.expiresAt * 1000 : rule.expiresAt;
+
+    if (now > expiryMs) {
+      return { approved: false, reason: `Session key ${rule.sessionPublicKey} has expired` };
+    }
+
+    const paymentOp = opts.transaction.operations.find(
+      (op): op is Operation.Payment => "amount" in op && "destination" in op,
+    ) as Operation.Payment | undefined;
+
+    const txAmount = paymentOp ? parseFloat(paymentOp.amount) : 0;
+    const currentSpend = this.sessionSpendTracking.get(rule.sessionPublicKey) ?? 0;
+    const maxSpend = parseFloat(rule.maxSpend);
+    const projectedSpend = currentSpend + txAmount;
+    const sessionSpendRemaining = Math.max(0, maxSpend - projectedSpend);
+
+    if (projectedSpend > maxSpend) {
+      return {
+        approved: false,
+        reason: `Session key spend cap exceeded (${projectedSpend} > ${maxSpend})`,
+        remaining: { sessionSpendRemaining: sessionSpendRemaining.toString() },
+      };
+    }
+
+    return {
+      approved: true,
+      remaining: { sessionSpendRemaining: sessionSpendRemaining.toString() },
+    };
   }
 
   private evaluateRule(rule: PolicyRule, opts: EvaluateOpts): EvaluateResult {
@@ -360,7 +586,11 @@ export class PolicyEngine {
         reason: `Transaction fee exceeds maximum allowed fee limit`,
       };
     }
-  evaluateContractAllowlist(rule: ContractAllowlistRule, opts: EvaluateOpts): EvaluateResult {
+
+    return { approved: true };
+  }
+
+  private evaluateContractAllowlist(rule: ContractAllowlistRule, opts: EvaluateOpts): EvaluateResult {
     for (const op of opts.transaction.operations) {
       // Soroban contract invocations have type 'invokeHostFunction'
       if (op.type !== "invokeHostFunction") {

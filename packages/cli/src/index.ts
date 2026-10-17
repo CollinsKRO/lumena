@@ -76,6 +76,13 @@ program
     }
   });
 
+registerContractCommand(program, {
+  defaultServerUrl: DEFAULT_SERVER_URL,
+  isJsonOutput,
+  getStellarNetwork,
+  horizonUrls: HORIZON_URLS,
+});
+
 const policyCmd = program.command("policy").description("Manage wallet policy rules");
 
 policyCmd
