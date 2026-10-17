@@ -180,6 +180,7 @@ export function LumenWalletCard({
 }: LumenWalletCardProps): React.ReactElement {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
+  const copyStatusId = "lumen-wallet-card-copy-status";
 
   const handleCopy = useCallback(async () => {
     try {
@@ -224,6 +225,7 @@ export function LumenWalletCard({
   return (
     <div
       className={["lumen-wallet-card", className].filter(Boolean).join(" ")}
+      role="region"
       aria-label={t.walletCard.cardLabel(truncated)}
     >
       {/* Address row */}
@@ -239,12 +241,31 @@ export function LumenWalletCard({
           type="button"
           className="lumen-wallet-card__copy-btn"
           aria-label={copied ? t.walletCard.copiedButton : t.walletCard.copyButton}
+          aria-describedby={copyStatusId}
           onClick={() => {
             void handleCopy();
           }}
         >
           {copied ? "✓" : "⧉"}
         </button>
+        <span
+          id={copyStatusId}
+          role="status"
+          aria-live="polite"
+          style={{
+            position: "absolute",
+            width: 1,
+            height: 1,
+            padding: 0,
+            margin: -1,
+            overflow: "hidden",
+            clip: "rect(0, 0, 0, 0)",
+            whiteSpace: "nowrap",
+            border: 0,
+          }}
+        >
+          {copied ? t.walletCard.copiedButton : ""}
+        </span>
       </div>
 
       {/* Balance */}
@@ -259,7 +280,11 @@ export function LumenWalletCard({
 
       {/* Optional QR code */}
       {renderQrCode && (
-        <div className="lumen-wallet-card__qr-code" aria-label={t.walletCard.qrCodeLabel}>
+        <div
+          className="lumen-wallet-card__qr-code"
+          role="img"
+          aria-label={t.walletCard.qrCodeLabel}
+        >
           {renderQrCode(walletId)}
         </div>
       )}
@@ -268,6 +293,7 @@ export function LumenWalletCard({
       {transactions && transactions.length > 0 && (
         <div
           className="lumen-wallet-card__tx-list-wrapper"
+          role="group"
           aria-label={`Transaction history — ${txCount} items`}
         >
           {/* Scrollable container */}
@@ -280,9 +306,14 @@ export function LumenWalletCard({
               position: "relative",
             }}
             role="list"
+            aria-label={`Transaction history — ${txCount} items`}
+            tabIndex={0}
           >
             {/* Spacer div that gives the list its full scrollable height */}
-            <div style={{ height: totalSize, position: "relative" }}>
+            <div
+              role="presentation"
+              style={{ height: totalSize, position: "relative" }}
+            >
               {virtualItems.map((virtualItem) => {
                 const tx = transactions[virtualItem.index];
                 if (!tx) return null;
@@ -291,6 +322,8 @@ export function LumenWalletCard({
                   <div
                     key={virtualItem.index}
                     role="listitem"
+                    aria-setsize={txCount}
+                    aria-posinset={virtualItem.index + 1}
                     style={{
                       position: "absolute",
                       top: virtualItem.start,

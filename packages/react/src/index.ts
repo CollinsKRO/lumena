@@ -71,3 +71,23 @@ export type {
   LumenConnectModalTab,
   LumenConnectModalTheme,
 } from "./components/LumenConnectModal.js";
+
+// #276 — Error boundary with sanitized diagnostics export
+export { LumenErrorBoundary } from "./components/LumenErrorBoundary.js";
+export type {
+  LumenErrorBoundaryProps,
+  LumenErrorDiagnostics,
+} from "./components/LumenErrorBoundary.js";
+
+// #271 — Encrypted client-side wallet state persistence
+export {
+  EncryptedIndexedDBStorage,
+  createEncryptedStorage,
+  deriveStorageKey,
+  purgeExpiredRecords,
+} from "./storage/indexeddb-storage.js";
+export type {
+  EncryptedStorageOptions,
+  StorageRecord,
+  StoredWalletState,
+} from "./storage/indexeddb-storage.js";
