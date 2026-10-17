@@ -1,3 +1,5 @@
+"use client";
+
 import { useCallback, useEffect, useState } from "react";
 import { useLumen } from "./context.js";
 
@@ -41,6 +43,10 @@ export function useBalance(
     void refetch();
 
     if (refreshInterval <= 0) {
+      return;
+    }
+
+    if (typeof window === "undefined") {
       return;
     }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { LumenProvider, useWallet } from "@lumen/react";
+import { LumenProvider, LumenThemeProvider, useWallet } from "@lumen/react";
 import { LumenClient } from "@lumen/web-sdk";
 
 const client = new LumenClient({
@@ -20,7 +20,9 @@ function WalletPanel() {
 export default function Page() {
   return (
     <LumenProvider client={client}>
-      <WalletPanel />
+      <LumenThemeProvider>
+        <WalletPanel />
+      </LumenThemeProvider>
     </LumenProvider>
   );
 }

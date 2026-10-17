@@ -7,6 +7,9 @@ services:
       STELLAR_NETWORK: local
       HORIZON_URL: http://stellar:8000
       SOROBAN_RPC_URL: http://stellar:8000/rpc
+      REDIS_SENTINEL_HOSTS: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+      REDIS_MASTER_NAME: mymaster
+      DATABASE_URL: postgres://lumen:lumen@postgres:5432/lumen
     ports:
       - "3000:3000"
     depends_on:

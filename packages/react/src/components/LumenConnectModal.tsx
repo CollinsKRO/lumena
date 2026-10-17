@@ -1,3 +1,5 @@
+"use client";
+
 import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useCreateWallet } from "../use-create-wallet.js";
 import { useCreateWalletWithPasskey } from "../use-create-wallet-with-passkey.js";
@@ -54,16 +56,16 @@ export interface LumenConnectModalProps {
 }
 
 const DEFAULT_THEME: Required<LumenConnectModalTheme> = {
-  primaryColor: "#4f46e5",
-  backgroundColor: "#ffffff",
-  textColor: "#111827",
-  mutedColor: "#6b7280",
-  borderColor: "#e5e7eb",
-  errorColor: "#dc2626",
-  fontFamily: "inherit",
+  primaryColor: "var(--lumen-primary, #4f46e5)",
+  backgroundColor: "var(--lumen-card-bg, #ffffff)",
+  textColor: "var(--lumen-text, #111827)",
+  mutedColor: "var(--lumen-text-muted, #6b7280)",
+  borderColor: "var(--lumen-border, #e5e7eb)",
+  errorColor: "var(--lumen-error, #dc2626)",
+  fontFamily: "var(--lumen-font-family, inherit)",
   fontSize: 14,
-  borderRadius: "12px",
-  buttonBorderRadius: "8px",
+  borderRadius: "var(--lumen-radius, 12px)",
+  buttonBorderRadius: "var(--lumen-radius-sm, 8px)",
 };
 
 const TAB_CREATE: LumenConnectModalTab = "create";
@@ -244,7 +246,7 @@ export function LumenConnectModal({
     width: "100%",
     padding: "12px",
     backgroundColor: t.primaryColor,
-    color: "#ffffff",
+    color: "var(--lumen-primary-contrast, #ffffff)",
     border: "none",
     borderRadius: t.buttonBorderRadius,
     fontWeight: 600,
@@ -259,7 +261,7 @@ export function LumenConnectModal({
       style={{
         position: "fixed",
         inset: 0,
-        backgroundColor: "rgba(0, 0, 0, 0.5)",
+        backgroundColor: "var(--lumen-overlay, rgba(0, 0, 0, 0.5))",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -281,12 +283,13 @@ export function LumenConnectModal({
           backgroundColor: t.backgroundColor,
           borderRadius: t.borderRadius,
           border: `1px solid ${t.borderColor}`,
+          color: t.textColor,
           width: "100%",
           maxWidth: 420,
           maxHeight: "calc(100vh - 32px)",
           overflowY: "auto",
           padding: 24,
-          boxShadow: "0 20px 50px rgba(0, 0, 0, 0.25)",
+          boxShadow: "var(--lumen-shadow, 0 20px 50px rgba(0, 0, 0, 0.25))",
         }}
       >
         {/* Header */}
