@@ -1,8 +1,7 @@
 import { Command } from "commander";
 import { Horizon, TransactionBuilder } from "@stellar/stellar-sdk";
 import fs from "node:fs";
-import crypto from "node:crypto";
-import readline from "node:readline";
+import { createInitCommand } from "./commands/init";
 
 const program = new Command();
 
@@ -76,6 +75,13 @@ program
       process.exit(1);
     }
   });
+
+registerContractCommand(program, {
+  defaultServerUrl: DEFAULT_SERVER_URL,
+  isJsonOutput,
+  getStellarNetwork,
+  horizonUrls: HORIZON_URLS,
+});
 
 const policyCmd = program.command("policy").description("Manage wallet policy rules");
 
@@ -630,5 +636,7 @@ cosignCmd
       process.exit(1);
     }
   });
+
+program.addCommand(createInitCommand());
 
 program.parse(process.argv);

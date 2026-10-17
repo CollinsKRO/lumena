@@ -100,9 +100,22 @@ export {
   type RedisWalletRegistryOpts,
 } from "./wallet/registry.js";
 export {
-  exportKeystore,
-  importKeystore,
-  type EncryptedKeystore,
-  type ExportKeystoreOpts,
-  type ImportKeystoreOpts,
-} from "./keys/keystore.js";
+  StreamClient,
+  type StreamClientOpts,
+  type StreamTopic,
+  type StreamEvent,
+  type StreamEventHandler,
+  type StreamReconnectOpts,
+  type StreamStatus,
+} from "./stellar/stream.js";
+export {
+  Telemetry,
+  DiagnosticsHook,
+  redactSensitive,
+  type LumenLogger,
+  type LogLevel,
+  type DiagnosticEvent,
+  type DiagnosticEventName,
+  type TelemetryOpts,
+  type DiagnosticsHookOpts,
+} from "./telemetry.js";
