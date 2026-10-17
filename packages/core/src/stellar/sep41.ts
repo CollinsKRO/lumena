@@ -35,6 +35,61 @@ export class Sep41Token {
   }
 
   /**
+   * Builds an invocation operation for checking an account's spendable balance.
+   */
+  buildSpendableBalanceOperation(address: string): xdr.Operation {
+    return Operation.invokeContractFunction({
+      contract: this.contractId,
+      function: "spendable_balance",
+      args: [new Address(address).toScVal()],
+    });
+  }
+
+  /**
+   * Builds an invocation operation for checking whether an account is authorized.
+   */
+  buildAuthorizedOperation(address: string): xdr.Operation {
+    return Operation.invokeContractFunction({
+      contract: this.contractId,
+      function: "authorized",
+      args: [new Address(address).toScVal()],
+    });
+  }
+
+  /**
+   * Builds an invocation operation for reading the token decimals.
+   */
+  buildDecimalsOperation(): xdr.Operation {
+    return Operation.invokeContractFunction({
+      contract: this.contractId,
+      function: "decimals",
+      args: [],
+    });
+  }
+
+  /**
+   * Builds an invocation operation for reading the token name.
+   */
+  buildNameOperation(): xdr.Operation {
+    return Operation.invokeContractFunction({
+      contract: this.contractId,
+      function: "name",
+      args: [],
+    });
+  }
+
+  /**
+   * Builds an invocation operation for reading the token symbol.
+   */
+  buildSymbolOperation(): xdr.Operation {
+    return Operation.invokeContractFunction({
+      contract: this.contractId,
+      function: "symbol",
+      args: [],
+    });
+  }
+
+  /**
    * Queries balance of an address by calling/simulating the balance method on Soroban RPC.
    */
   async balance(address: string): Promise<bigint> {
@@ -127,6 +182,35 @@ export class Sep41Token {
         new Address(spender).toScVal(),
         new Address(from).toScVal(),
         new Address(to).toScVal(),
+        nativeToScVal(BigInt(amount), { type: "i128" }),
+      ],
+    });
+  }
+
+  /**
+   * Encodes a SEP-41 `burn` Soroban operation (from, amount).
+   */
+  burn(from: string, amount: string | bigint): xdr.Operation {
+    return Operation.invokeContractFunction({
+      contract: this.contractId,
+      function: "burn",
+      args: [
+        new Address(from).toScVal(),
+        nativeToScVal(BigInt(amount), { type: "i128" }),
+      ],
+    });
+  }
+
+  /**
+   * Encodes a SEP-41 `burn_from` Soroban operation (spender, from, amount).
+   */
+  burnFrom(spender: string, from: string, amount: string | bigint): xdr.Operation {
+    return Operation.invokeContractFunction({
+      contract: this.contractId,
+      function: "burn_from",
+      args: [
+        new Address(spender).toScVal(),
+        new Address(from).toScVal(),
         nativeToScVal(BigInt(amount), { type: "i128" }),
       ],
     });

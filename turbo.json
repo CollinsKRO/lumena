@@ -22,6 +22,14 @@
     "lint": {},
     "typecheck": {
       "dependsOn": ["^build"]
+    },
+    "contracts:build": {
+      "dependsOn": ["^build"],
+      "outputs": ["contracts/target/**"]
+    },
+    "contracts:test": {
+      "dependsOn": ["contracts:build"],
+      "outputs": ["contracts/target/**"]
     }
   }
 }

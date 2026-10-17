@@ -16,7 +16,8 @@ A practical end-to-end guide explaining how Lumen eliminates gas fees for end us
    - [Raw REST API](#raw-rest-api)
 6. [Sponsor Account Security](#6-sponsor-account-security)
 7. [Preventing Sponsor Account Drainage](#7-preventing-sponsor-account-drainage)
-8. [FAQ](#8-faq)
+8. [On-Chain Paymaster for Soroban Invocations](#8-on-chain-paymaster-for-soroban-invocations)
+9. [FAQ](#9-faq)
 
 ---
 
@@ -313,7 +314,118 @@ monitor.start();
 
 ---
 
-## 8. FAQ
+## 8. On-Chain Paymaster for Soroban Invocations
+
+Fee-bumps cover the _classic_ transaction fee, but a Soroban contract call also consumes **CPU and memory resource fees** that are charged to the transaction source account. For dApps that want to sponsor those costs on-chain — and keep a per-user credit ledger — Lumen ships a **Paymaster contract** in `contracts/paymaster/`.
+
+The Paymaster lets a dApp deposit XLM (or a stablecoin) into a contract-held ledger, then authorize the contract to pay Soroban resource fees on behalf of specific users, subject to per-user, per-epoch spend limits.
+
+### How it fits with fee-bumps
+
+| Layer | Who pays | Mechanism |
+| --- | --- | --- |
+| Classic transaction fee | Sponsor account | Fee-bump envelope (CAP-0015) |
+| Soroban CPU / memory resource fee | Paymaster contract ledger | `sponsor_invocation` debit |
+| Contract logic / state | Contract itself | Normal Soroban execution |
+
+The two layers compose: the user's inner transaction is still fee-bumped by the sponsor account, while the Paymaster covers the Soroban resource portion from the dApp's deposited balance.
+
+### Depositing funds
+
+The dApp owner deposits into the Paymaster once (or tops up periodically). Deposits are credited to the dApp's ledger balance inside the contract:
+
+```typescript
+import { Contract, nativeToScVal, Address } from "@stellar/stellar-sdk";
+
+const paymaster = new Contract(PAYMASTER_CONTRACT_ID);
+
+// Deposit 500 XLM (in stroops) into the paymaster ledger.
+const depositOp = paymaster.call(
+  "deposit",
+  new Address(ownerPublicKey).toScVal(),
+  nativeToScVal(500_0000000n, { type: "i128" }), // 500 XLM in stroops
+);
+```
+
+### Sponsoring an invocation
+
+Before (or alongside) submitting a user's Soroban invocation, the dApp calls `sponsor_invocation` to authorize the Paymaster to cover the resource fee for that call:
+
+```solidity
+sponsor_invocation(
+  user: Address,          // the end user whose invocation is sponsored
+  contract: Address,      // the contract being invoked
+  function_name: Symbol,  // the function being called (e.g. "transfer")
+  max_fee: i128,          // upper bound on the resource fee to sponsor, in stroops
+)
+```
+
+Example invocation from a dApp backend:
+
+```typescript
+const sponsorOp = paymaster.call(
+  "sponsor_invocation",
+  new Address(userPublicKey).toScVal(),          // user
+  new Address(tokenContractId).toScVal(),        // contract
+  nativeToScVal("transfer", { type: "symbol" }), // function_name
+  nativeToScVal(1_0000000n, { type: "i128" }),   // max_fee: 1 XLM cap
+);
+```
+
+The contract:
+
+1. Verifies the caller is an authorized sponsor for the dApp ledger.
+2. Checks the user's spend against the **per-user, per-epoch limit** (e.g. 5 XLM per user per day).
+3. Debits the resource fee (up to `max_fee`) from the dApp's ledger balance.
+4. Emits a `PaymasterSponsorship` event recording the user, contract, function, and amount sponsored.
+
+If the user has exhausted their epoch allowance, or `max_fee` would exceed the remaining limit, the call fails with a fee-limit denial and no funds are debited.
+
+### What the user experiences
+
+The end user signs only their own invocation. They hold no XLM for fees: the sponsor account fee-bumps the envelope, and the Paymaster's ledger absorbs the Soroban resource fee. The user's balance is untouched apart from the contract logic itself (e.g. the transferred amount).
+
+### Monitoring sponsorships
+
+Every successful sponsorship emits a `PaymasterSponsorship` event. Subscribe to it to build dashboards, per-user usage reports, or alerts when a user approaches their epoch limit:
+
+```typescript
+import { rpc } from "@stellar/stellar-sdk";
+
+const server = new rpc.Server(RPC_URL);
+
+const events = await server.getEvents({
+  startLedger: latestLedger,
+  filters: [
+    {
+      type: "contract",
+      contractIds: [PAYMASTER_CONTRACT_ID],
+      topics: [["*", "PaymasterSponsorship"]],
+    },
+  ],
+});
+
+for (const event of events.events) {
+  // event.value decodes to { user, contract, function_name, amount }
+  console.log("Sponsored invocation:", event.value);
+}
+```
+
+### Withdrawing the remaining balance
+
+Only the authorized owner of the dApp ledger can withdraw unspent funds. Withdrawals are rejected for any other caller:
+
+```typescript
+const withdrawOp = paymaster.call(
+  "withdraw",
+  new Address(ownerPublicKey).toScVal(),
+  nativeToScVal(100_0000000n, { type: "i128" }), // 100 XLM
+);
+```
+
+---
+
+## 9. FAQ
 
 **Q: Does the user need to hold any XLM at all?**
 
@@ -334,6 +446,10 @@ No. `@lumen/server` co-signs and immediately submits the fee-bumped transaction 
 **Q: Can I use fee-bumping with Soroban smart contracts?**
 
 Yes. Soroban transactions can be fee-bumped just like classic transactions. Use `client.invokeContract()` — it follows the same cosign → fee-bump → submit path.
+
+**Q: Do I need the Paymaster contract if I already fee-bump Soroban calls?**
+
+Not necessarily. Fee-bumping covers the classic fee, but Soroban resource fees (CPU/memory) are still charged to the transaction source. The Paymaster is useful when you want a dApp-funded, per-user-metered ledger for those resource fees rather than paying them from a single sponsor account. See [section 8](#8-on-chain-paymaster-for-soroban-invocations).
 
 ---
 

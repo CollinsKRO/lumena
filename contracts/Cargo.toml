@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "paymaster",
+    "session-keys",
+    "social-recovery",
+    "token-sep41",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/lumen-network/lumen"
+authors = ["Lumen Contributors"]
+
+[workspace.dependencies]
+soroban-sdk = "21.0.0"
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
+</final_file_content>
