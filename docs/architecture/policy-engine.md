@@ -8,6 +8,56 @@ Lumen's \`PolicyEngine\` evaluates every transaction before co-signing to protec
 - **Velocity Limits**: Caps the number of transactions permitted within sliding time windows.
 - **Session Keys**: Enforces expiration timestamps and cumulative spend allowances for delegated keys.
 
+## On-Chain Session Key Delegation Contract
+
+Off-chain policy engines can be bypassed if raw account credentials leak. To close this gap,
+Lumen ships an on-chain Session Key Delegation contract (in \`contracts/session-keys/\`) that
+enforces session key permissions directly at the Soroban consensus layer, independently of the
+off-chain \`PolicyEngine\`.
+
+### Registration
+
+Account owners register temporary public keys with the following parameters:
+
+- \`valid_until: u64\`: the ledger timestamp after which the session key is no longer valid.
+- \`allowed_contracts: Vec<Address>\`: the set of target contracts the session key may call.
+- \`allowed_methods: Vec<Symbol>\`: the set of contract methods the session key may invoke.
+- \`max_cumulative_amount: i128\`: the total cumulative amount the session key may spend across
+  all calls before its quota is exhausted.
+
+### Validation
+
+The contract exposes:
+
+\`\`\`
+validate_session_call(session_key: Address, target: Address, method: Symbol, amount: i128) -> bool
+\`\`\`
+
+This returns \`true\` only when **all** of the following hold:
+
+- The session key is registered and has not expired (\`valid_until\` is in the future).
+- The \`target\` contract is present in \`allowed_contracts\`.
+- The \`method\` symbol is present in \`allowed_methods\`.
+- The \`amount\`, when added to the key's cumulative spend, does not exceed
+  \`max_cumulative_amount\`.
+
+The contract therefore rejects expired keys, unlisted targets (and methods), and amounts that
+would exceed the cumulative quota.
+
+### Relationship to the Off-Chain PolicyEngine
+
+The on-chain contract and the off-chain \`PolicyEngine\` are complementary layers:
+
+- The **off-chain PolicyEngine** performs richer, pre-signing checks (spend limits, multi-op
+  summation, destination allowlists, velocity limits) and can be updated without a contract
+  upgrade.
+- The **on-chain contract** provides a hard, consensus-level backstop: even if off-chain policy
+  is bypassed or raw credentials leak, a session key cannot call unlisted contracts or methods,
+  cannot operate past \`valid_until\`, and cannot exceed its cumulative quota.
+
+Both layers should be configured consistently so that a session key accepted off-chain is also
+accepted on-chain, and vice versa.
+
 ## Session Key Rejection Webhook
 
 When \`PolicyEngine.evaluateSessionKey()\` rejects a session key, the engine dispatches a
@@ -27,50 +77,39 @@ The event payload includes:
 \`session_key.rejected\` is a member of the \`WebhookEventType\` union, so subscribers can
 filter for it alongside other webhook events.
 
-## Policy Guard Contract (Cross-Contract Invocation Policy)
+## On-Chain Policy Contracts
 
-The off-chain \`PolicyEngine\` protects the *transaction* layer, but it cannot inspect the
-sub-contracts a Soroban invocation will call at execution time. Wallets that execute batch
-Soroban calls therefore need an **on-chain** guarantee that every called sub-contract has
-verified source code and belongs to a trusted protocol registry. The \`policy-guard\` contract
-(\`contracts/policy-guard/\`) provides this guarantee.
+In addition to the off-chain \`PolicyEngine\`, Lumen ships Soroban contracts under
+\`contracts/\` that enforce spending policy directly on-chain. This provides defense in
+depth: even if a co-signer is compromised and the off-chain engine is bypassed, the
+on-chain contract still rejects transactions that exceed the configured allowance.
 
-### Verified-Contract Registry
+### Spend Policy Contract (\`contracts/spend-policy/\`)
 
-The contract maintains an on-chain registry of verified contracts, keyed by contract address:
+The \`spend-policy\` contract mirrors the TypeScript \`SpendLimit\` rule, moving the
+enforcement of daily spending ceilings onto the ledger:
 
-- **Verified contract hashes**: each registered entry stores the expected code hash of the
-  contract, so callers can confirm the deployed bytecode matches the audited/verified source.
-- **Trusted protocol registries**: contracts may be registered as members of trusted protocol
-  registries, allowing wallets to express policy in terms of protocols rather than individual
-  addresses.
-- **Registration / deregistration**: administrative entry points add, update, and remove
-  registry entries. Only authorized administrators may mutate the registry.
-
-### \`validate_invocation\` Guard
-
-Before dispatching execution, the wallet calls \`validate_invocation\` on the guard. The guard:
-
-1. Inspects the invocation's call targets (the dynamic call graph of the batch).
-2. Checks \`env.current_contract_address()\` and each authorized call target against the
-   verified-contract registry.
-3. Rejects the invocation if any target is unregistered, has a mismatched code hash, or does
-   not belong to a trusted protocol registry.
-4. Approves the invocation if all targets are registered and verified.
-
-Because the check runs on-chain, it cannot be bypassed by a compromised client and applies
-uniformly to every invocation routed through the guard.
+- **Per-asset tracking**: Allowances are tracked independently per asset (e.g. XLM vs
+  USDC), matching the per-asset ceilings of the off-chain \`SpendLimit\` rule.
+- **Rolling 24-hour windows**: The contract maintains a sliding 24-hour window per
+  asset. Each spend consumes from the remaining budget, and the budget restores
+  correctly as time advances and older consumption falls out of the window.
+- **Rejection of over-budget spends**: Any transaction that would exceed the remaining
+  allowance within the current 24-hour window is rejected.
+- **Master-key delayed overrides**: The master key may override or adjust limits, but
+  such changes take effect only after a 24-hour delay. This prevents a compromised
+  master key from immediately raising limits to drain funds.
 
 ### Relationship to the Off-Chain PolicyEngine
 
-The two layers are complementary:
+The on-chain contracts complement rather than replace the off-chain \`PolicyEngine\`:
 
-- **Off-chain \`PolicyEngine\`**: evaluates spend limits, allowlists, velocity limits, and
-  session keys on the transaction *before* co-signing. It has no visibility into the
-  sub-contracts a Soroban invocation will reach.
-- **On-chain \`policy-guard\`**: enforces cross-contract invocation policy at execution time,
-  ensuring every called sub-contract is verified and trusted.
+- The \`PolicyEngine\` performs richer, pre-signing evaluation (multi-op summing,
+  allowlists, velocity limits, session keys) and provides fast feedback and webhook
+  notifications.
+- The \`spend-policy\` contract provides a trust-minimized backstop that enforces the
+  same per-asset daily ceilings on-chain, ensuring the documented spend-limit
+  semantics hold even when the off-chain layer is unavailable or compromised.
 
-Together they cover both the transaction envelope and the dynamic call graph. Unregistered
-contracts are rejected, while registered, verified contracts execute with zero overhead
-beyond the registry lookup.
+Both layers should be configured with consistent per-asset limits so that the
+off-chain evaluation and the on-chain enforcement agree.

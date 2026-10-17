@@ -147,3 +147,9 @@ export {
   type TelemetryOpts,
   type DiagnosticsHookOpts,
 } from "./telemetry.js";
+export {
+  encodeXdrToUrFrames,
+  decodeUrFrames,
+  type UrFrame,
+  type AirgapOptions,
+} from "./stellar/airgap.js";

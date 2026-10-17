@@ -13,6 +13,8 @@
     "lint": "npm run lint --workspaces --if-present",
     "lint:security": "eslint --no-eslintrc --config scripts/linter/eslint.config.js --ext .js,.jsx,.ts,.tsx .",
     "typecheck": "npm run typecheck --workspaces --if-present",
+    "contracts:build": "cargo build --manifest-path contracts/Cargo.toml --target wasm32-unknown-unknown --release",
+    "contracts:test": "cargo test --manifest-path contracts/Cargo.toml",
     "docs:dev": "astro dev --root docs",
     "docs:build": "astro build --root docs",
     "docs:preview": "astro preview --root docs",

@@ -9,34 +9,39 @@ Lumena wallets move through four operational states:
 
 Recovery and closure should keep policy in sync with on-chain state. When a wallet is retired, remove stored policy, stop sponsor monitoring for the account, and use account merge only after balances, trustlines, and claimable balances are cleared.
 
-## Dead-Man's Switch and Inheritance Vault
+## Social Recovery
 
-The inheritance vault (`contracts/inheritance/`) provides inactivity-triggered inheritance for seedless wallets, ensuring digital assets are not lost if the user becomes incapacitated. It is an on-chain Soroban contract that tracks wallet activity and hands custody to a designated beneficiary once the wallet goes dormant.
+Seedless wallets rely on social recovery so that a lost passkey or device key can be restored without a centralized server holding custody. The Social Recovery contract (`contracts/social-recovery/`) implements this as an M-of-N guardian scheme with a configurable timelock.
 
-### Heartbeat Tracking
+### Guardian Registration
 
-The contract stores a `last_heartbeat` timestamp for each wallet. Any wallet activity refreshes this timestamp, keeping the wallet marked as alive. The heartbeat is the single source of truth for dormancy: as long as it is being updated, the wallet is considered active and no inheritance action can proceed.
+The wallet owner registers N guardian addresses (for example emails, friends, or secondary devices) and configures:
 
-### Dormancy Period
+- An M-of-N threshold: at least M guardians must approve a recovery before it can execute.
+- A configurable timelock (e.g., 48 hours) that defines the grace period between a recovery reaching threshold and its execution.
 
-Each wallet has a configured `dormancy_period`. The wallet is considered dormant when:
+Guardian registration and threshold/timelock configuration are owner-controlled and keep the on-chain recovery policy in sync with the wallet's protected state.
 
-```
-current_time - last_heartbeat > dormancy_period
-```
+### Recovery Initiation
 
-While `current_time - last_heartbeat` is within the dormancy period, the wallet is active and beneficiary claims are rejected.
+When the owner loses access to their key, a recovery is initiated against the wallet, proposing a new key (key rotation target). Initiation opens a recovery proposal that guardians can vote on.
 
-### Beneficiary Designation
+### Guardian Voting
 
-The wallet owner designates a beneficiary (an account or address) that is authorized to claim custody of the wallet's assets. The beneficiary is recorded in the contract alongside the heartbeat and dormancy configuration, and can be updated by the owner while the wallet is active.
+Registered guardians vote to approve the proposed recovery. Once the number of approving guardians reaches the M-of-N threshold, the recovery becomes eligible for execution, subject to the timelock.
 
-### Custody-Claim Flow
+### Timelock Grace Period
 
-1. The owner (or any wallet activity) updates `last_heartbeat`, resetting the dormancy clock.
-2. If the owner stops updating the heartbeat, the dormancy period elapses.
-3. Once `current_time - last_heartbeat > dormancy_period`, the designated beneficiary may submit a claim.
-4. The contract verifies the caller is the designated beneficiary and that the wallet is dormant, then transfers custody of the assets to the beneficiary.
-5. Claims submitted while the heartbeat is still active (within the dormancy period) fail, preserving the owner's control.
+After the threshold is met, the recovery must wait for the configured timelock to elapse before it can be executed. This grace period gives the legitimate owner time to notice an unauthorized recovery attempt.
 
-This flow guarantees that a claim can only succeed after the dormancy period has expired, and that any heartbeat activity blocks a claim.
+### Owner Cancellation
+
+During the grace period, the legitimate owner can cancel the pending recovery. Cancellation aborts the proposal so that the key rotation is never executed, protecting the wallet from malicious or mistaken recovery attempts.
+
+### Execution of Key Rotation
+
+Once the timelock has elapsed and the recovery has not been cancelled, execution performs the key rotation, replacing the lost key with the proposed new key. The wallet then returns to its normal lifecycle states (Protected and Active) under the new key, with recovery policy intact.
+
+### Fit Within the Seedless Wallet Lifecycle
+
+Social recovery complements the four operational states above: it is configured while the wallet is Protected, remains dormant while Active, and is invoked when a key is lost. Because recovery is enforced on-chain by the guardian contract rather than by a server, restoring account ownership does not reintroduce centralization. As with other lifecycle transitions, recovery and any resulting policy changes should keep off-chain policy in sync with on-chain state.

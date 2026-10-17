@@ -14,6 +14,38 @@ import type {
 import type { StellarClient } from "../stellar/client.js";
 import { toScVal, fromScVal } from "./scval.js";
 
+/**
+ * Arguments for the spend-policy contract's `spend` method.
+ */
+export interface SpendPolicySpendArgs {
+  asset: string;
+  amount: bigint | number | string;
+  recipient?: string;
+}
+
+/**
+ * Arguments for the spend-policy contract's `schedule_limit_change` method.
+ */
+export interface SpendPolicyScheduleLimitChangeArgs {
+  asset: string;
+  newLimit: bigint | number | string;
+}
+
+/**
+ * Arguments for the spend-policy contract's `apply_pending_limit` method.
+ */
+export interface SpendPolicyApplyPendingLimitArgs {
+  asset: string;
+}
+
+/**
+ * Arguments for the ttl-manager contract's `extend_ttl_if_needed` method.
+ */
+export interface TtlManagerExtendArgs {
+  thresholdLedgers: number;
+  extendBy: number;
+}
+
 export class ContractClient {
   readonly client: StellarClient;
 
@@ -100,277 +132,203 @@ export class ContractClient {
     return (await this.client.rpc.prepareTransaction(tx)) as Transaction;
   }
 
-  // ---------------------------------------------------------------------------
-  // policy-guard (#222): cross-contract invocation policy validator
-  // ---------------------------------------------------------------------------
-
   /**
-   * Builds a `register` invocation for the policy-guard contract, registering a
-   * verified contract hash in the trusted registry.
+   * Builds a typed invocation for the spend-policy contract's `spend` method.
    */
-  buildPolicyGuardRegisterInvocation(opts: {
-    contractId: string;
-    target: string;
-    wasmHash: string | Uint8Array;
-  }): ContractInvocation {
+  buildSpendPolicySpendInvocation(
+    contractId: string,
+    args: SpendPolicySpendArgs
+  ): ContractInvocation {
+    const scArgs: unknown[] = [args.asset, args.amount];
+    if (args.recipient !== undefined) {
+      scArgs.push(args.recipient);
+    }
     return {
-      contractId: opts.contractId,
-      method: "register",
-      args: [opts.target, opts.wasmHash],
+      contractId,
+      method: "spend",
+      args: scArgs,
     };
   }
 
   /**
-   * Builds a `verify` invocation for the policy-guard contract, checking whether
-   * a target contract is registered with the expected wasm hash.
+   * Builds a typed invocation for the spend-policy contract's
+   * `schedule_limit_change` method (subject to the 24-hour delay).
    */
-  buildPolicyGuardVerifyInvocation(opts: {
-    contractId: string;
-    target: string;
-    wasmHash?: string | Uint8Array;
-  }): ContractInvocation {
+  buildSpendPolicyScheduleLimitChangeInvocation(
+    contractId: string,
+    args: SpendPolicyScheduleLimitChangeArgs
+  ): ContractInvocation {
     return {
-      contractId: opts.contractId,
-      method: "verify",
-      args: opts.wasmHash === undefined ? [opts.target] : [opts.target, opts.wasmHash],
+      contractId,
+      method: "schedule_limit_change",
+      args: [args.asset, args.newLimit],
     };
   }
 
   /**
-   * Builds a `validate_invocation` invocation for the policy-guard contract,
-   * enforcing the policy against the authorized call targets before dispatch.
+   * Builds a typed invocation for the spend-policy contract's
+   * `apply_pending_limit` method.
    */
-  buildPolicyGuardValidateInvocation(opts: {
-    contractId: string;
-    targets: string[];
-    caller?: string;
-  }): ContractInvocation {
+  buildSpendPolicyApplyPendingLimitInvocation(
+    contractId: string,
+    args: SpendPolicyApplyPendingLimitArgs
+  ): ContractInvocation {
     return {
-      contractId: opts.contractId,
-      method: "validate_invocation",
-      args: opts.caller === undefined ? [opts.targets] : [opts.targets, opts.caller],
+      contractId,
+      method: "apply_pending_limit",
+      args: [args.asset],
     };
   }
-
-  /** Simulates a policy-guard `register` invocation. */
-  async simulatePolicyGuardRegister(
-    opts: {
-      contractId: string;
-      target: string;
-      wasmHash: string | Uint8Array;
-    },
-    sourceAddress?: string
-  ): Promise<ContractSimulationResult> {
-    return this.simulate(this.buildPolicyGuardRegisterInvocation(opts), sourceAddress);
-  }
-
-  /** Simulates a policy-guard `verify` invocation. */
-  async simulatePolicyGuardVerify(
-    opts: {
-      contractId: string;
-      target: string;
-      wasmHash?: string | Uint8Array;
-    },
-    sourceAddress?: string
-  ): Promise<ContractSimulationResult> {
-    return this.simulate(this.buildPolicyGuardVerifyInvocation(opts), sourceAddress);
-  }
-
-  /** Simulates a policy-guard `validate_invocation` invocation. */
-  async simulatePolicyGuardValidate(
-    opts: {
-      contractId: string;
-      targets: string[];
-      caller?: string;
-    },
-    sourceAddress?: string
-  ): Promise<ContractSimulationResult> {
-    return this.simulate(this.buildPolicyGuardValidateInvocation(opts), sourceAddress);
-  }
-
-  // ---------------------------------------------------------------------------
-  // oracle-spend-limit (#223): USD spend limit enforcement
-  // ---------------------------------------------------------------------------
 
   /**
-   * Builds a `check_spend` invocation for the oracle-spend-limit contract,
-   * converting the asset amount to USD via the oracle before authorizing.
+   * Builds a typed invocation for the ttl-manager contract's
+   * `extend_ttl_if_needed` method.
    */
-  buildOracleCheckSpendInvocation(opts: {
-    contractId: string;
-    account: string;
-    asset: string;
-    amount: bigint | number | string;
-  }): ContractInvocation {
+  buildTtlManagerExtendInvocation(
+    contractId: string,
+    args: TtlManagerExtendArgs
+  ): ContractInvocation {
     return {
-      contractId: opts.contractId,
-      method: "check_spend",
-      args: [opts.account, opts.asset, opts.amount],
+      contractId,
+      method: "extend_ttl_if_needed",
+      args: [args.thresholdLedgers, args.extendBy],
     };
   }
 
-  /** Simulates an oracle-spend-limit `check_spend` invocation. */
-  async simulateOracleCheckSpend(
-    opts: {
-      contractId: string;
-      account: string;
-      asset: string;
-      amount: bigint | number | string;
-    },
+  /**
+   * Simulates the spend-policy contract's `spend` method.
+   */
+  async simulateSpendPolicySpend(
+    contractId: string,
+    args: SpendPolicySpendArgs,
     sourceAddress?: string
   ): Promise<ContractSimulationResult> {
-    return this.simulate(this.buildOracleCheckSpendInvocation(opts), sourceAddress);
+    return this.simulate(
+      this.buildSpendPolicySpendInvocation(contractId, args),
+      sourceAddress
+    );
   }
 
-  // ---------------------------------------------------------------------------
-  // proxy (#224): upgradeable proxy with multi-sig + timelock
-  // ---------------------------------------------------------------------------
+  /**
+   * Simulates the spend-policy contract's `schedule_limit_change` method.
+   */
+  async simulateSpendPolicyScheduleLimitChange(
+    contractId: string,
+    args: SpendPolicyScheduleLimitChangeArgs,
+    sourceAddress?: string
+  ): Promise<ContractSimulationResult> {
+    return this.simulate(
+      this.buildSpendPolicyScheduleLimitChangeInvocation(contractId, args),
+      sourceAddress
+    );
+  }
 
-  /** Builds a proxy `propose` invocation to propose a new wasm hash upgrade. */
-  buildProxyProposeInvocation(opts: {
+  /**
+   * Simulates the spend-policy contract's `apply_pending_limit` method.
+   */
+  async simulateSpendPolicyApplyPendingLimit(
+    contractId: string,
+    args: SpendPolicyApplyPendingLimitArgs,
+    sourceAddress?: string
+  ): Promise<ContractSimulationResult> {
+    return this.simulate(
+      this.buildSpendPolicyApplyPendingLimitInvocation(contractId, args),
+      sourceAddress
+    );
+  }
+
+  /**
+   * Simulates the ttl-manager contract's `extend_ttl_if_needed` method.
+   */
+  async simulateTtlManagerExtend(
+    contractId: string,
+    args: TtlManagerExtendArgs,
+    sourceAddress?: string
+  ): Promise<ContractSimulationResult> {
+    return this.simulate(
+      this.buildTtlManagerExtendInvocation(contractId, args),
+      sourceAddress
+    );
+  }
+
+  /**
+   * Builds a prepared transaction for the spend-policy contract's `spend` method.
+   */
+  async buildSpendPolicySpendTransaction(opts: {
+    sourceAddress: string;
     contractId: string;
-    proposer: string;
-    wasmHash: string | Uint8Array;
-  }): ContractInvocation {
-    return {
-      contractId: opts.contractId,
-      method: "propose",
-      args: [opts.proposer, opts.wasmHash],
-    };
+    args: SpendPolicySpendArgs;
+    fee?: string;
+    timeoutSeconds?: number;
+  }): Promise<Transaction> {
+    return this.buildTransaction({
+      sourceAddress: opts.sourceAddress,
+      invocation: this.buildSpendPolicySpendInvocation(opts.contractId, opts.args),
+      fee: opts.fee,
+      timeoutSeconds: opts.timeoutSeconds,
+    });
   }
 
-  /** Builds a proxy `approve` invocation to approve a pending upgrade proposal. */
-  buildProxyApproveInvocation(opts: {
+  /**
+   * Builds a prepared transaction for the spend-policy contract's
+   * `schedule_limit_change` method.
+   */
+  async buildSpendPolicyScheduleLimitChangeTransaction(opts: {
+    sourceAddress: string;
     contractId: string;
-    approver: string;
-    proposalId: bigint | number | string;
-  }): ContractInvocation {
-    return {
-      contractId: opts.contractId,
-      method: "approve",
-      args: [opts.approver, opts.proposalId],
-    };
+    args: SpendPolicyScheduleLimitChangeArgs;
+    fee?: string;
+    timeoutSeconds?: number;
+  }): Promise<Transaction> {
+    return this.buildTransaction({
+      sourceAddress: opts.sourceAddress,
+      invocation: this.buildSpendPolicyScheduleLimitChangeInvocation(
+        opts.contractId,
+        opts.args
+      ),
+      fee: opts.fee,
+      timeoutSeconds: opts.timeoutSeconds,
+    });
   }
 
-  /** Builds a proxy `execute_upgrade` invocation to execute an approved upgrade. */
-  buildProxyExecuteUpgradeInvocation(opts: {
+  /**
+   * Builds a prepared transaction for the spend-policy contract's
+   * `apply_pending_limit` method.
+   */
+  async buildSpendPolicyApplyPendingLimitTransaction(opts: {
+    sourceAddress: string;
     contractId: string;
-    proposalId: bigint | number | string;
-  }): ContractInvocation {
-    return {
-      contractId: opts.contractId,
-      method: "execute_upgrade",
-      args: [opts.proposalId],
-    };
+    args: SpendPolicyApplyPendingLimitArgs;
+    fee?: string;
+    timeoutSeconds?: number;
+  }): Promise<Transaction> {
+    return this.buildTransaction({
+      sourceAddress: opts.sourceAddress,
+      invocation: this.buildSpendPolicyApplyPendingLimitInvocation(
+        opts.contractId,
+        opts.args
+      ),
+      fee: opts.fee,
+      timeoutSeconds: opts.timeoutSeconds,
+    });
   }
 
-  /** Simulates a proxy `propose` invocation. */
-  async simulateProxyPropose(
-    opts: {
-      contractId: string;
-      proposer: string;
-      wasmHash: string | Uint8Array;
-    },
-    sourceAddress?: string
-  ): Promise<ContractSimulationResult> {
-    return this.simulate(this.buildProxyProposeInvocation(opts), sourceAddress);
-  }
-
-  /** Simulates a proxy `approve` invocation. */
-  async simulateProxyApprove(
-    opts: {
-      contractId: string;
-      approver: string;
-      proposalId: bigint | number | string;
-    },
-    sourceAddress?: string
-  ): Promise<ContractSimulationResult> {
-    return this.simulate(this.buildProxyApproveInvocation(opts), sourceAddress);
-  }
-
-  /** Simulates a proxy `execute_upgrade` invocation. */
-  async simulateProxyExecuteUpgrade(
-    opts: {
-      contractId: string;
-      proposalId: bigint | number | string;
-    },
-    sourceAddress?: string
-  ): Promise<ContractSimulationResult> {
-    return this.simulate(this.buildProxyExecuteUpgradeInvocation(opts), sourceAddress);
-  }
-
-  // ---------------------------------------------------------------------------
-  // inheritance (#225): dead-man's switch / inheritance vault
-  // ---------------------------------------------------------------------------
-
-  /** Builds an inheritance `heartbeat` invocation to refresh the last activity. */
-  buildInheritanceHeartbeatInvocation(opts: {
+  /**
+   * Builds a prepared transaction for the ttl-manager contract's
+   * `extend_ttl_if_needed` method.
+   */
+  async buildTtlManagerExtendTransaction(opts: {
+    sourceAddress: string;
     contractId: string;
-    owner: string;
-  }): ContractInvocation {
-    return {
-      contractId: opts.contractId,
-      method: "heartbeat",
-      args: [opts.owner],
-    };
-  }
-
-  /** Builds an inheritance `claim` invocation for the beneficiary to claim custody. */
-  buildInheritanceClaimInvocation(opts: {
-    contractId: string;
-    beneficiary: string;
-  }): ContractInvocation {
-    return {
-      contractId: opts.contractId,
-      method: "claim",
-      args: [opts.beneficiary],
-    };
-  }
-
-  /** Builds an inheritance `set_beneficiary` invocation to designate a beneficiary. */
-  buildInheritanceSetBeneficiaryInvocation(opts: {
-    contractId: string;
-    owner: string;
-    beneficiary: string;
-  }): ContractInvocation {
-    return {
-      contractId: opts.contractId,
-      method: "set_beneficiary",
-      args: [opts.owner, opts.beneficiary],
-    };
-  }
-
-  /** Simulates an inheritance `heartbeat` invocation. */
-  async simulateInheritanceHeartbeat(
-    opts: {
-      contractId: string;
-      owner: string;
-    },
-    sourceAddress?: string
-  ): Promise<ContractSimulationResult> {
-    return this.simulate(this.buildInheritanceHeartbeatInvocation(opts), sourceAddress);
-  }
-
-  /** Simulates an inheritance `claim` invocation. */
-  async simulateInheritanceClaim(
-    opts: {
-      contractId: string;
-      beneficiary: string;
-    },
-    sourceAddress?: string
-  ): Promise<ContractSimulationResult> {
-    return this.simulate(this.buildInheritanceClaimInvocation(opts), sourceAddress);
-  }
-
-  /** Simulates an inheritance `set_beneficiary` invocation. */
-  async simulateInheritanceSetBeneficiary(
-    opts: {
-      contractId: string;
-      owner: string;
-      beneficiary: string;
-    },
-    sourceAddress?: string
-  ): Promise<ContractSimulationResult> {
-    return this.simulate(this.buildInheritanceSetBeneficiaryInvocation(opts), sourceAddress);
+    args: TtlManagerExtendArgs;
+    fee?: string;
+    timeoutSeconds?: number;
+  }): Promise<Transaction> {
+    return this.buildTransaction({
+      sourceAddress: opts.sourceAddress,
+      invocation: this.buildTtlManagerExtendInvocation(opts.contractId, opts.args),
+      fee: opts.fee,
+      timeoutSeconds: opts.timeoutSeconds,
+    });
   }
 }

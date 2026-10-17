@@ -1,17 +1,17 @@
 [workspace]
 resolver = "2"
 members = [
-    "policy-guard",
-    "oracle-spend-limit",
-    "proxy",
-    "inheritance",
+    "paymaster",
+    "session-keys",
+    "social-recovery",
+    "token-sep41",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/lumen/lumen"
+repository = "https://github.com/lumen-network/lumen"
 authors = ["Lumen Contributors"]
 
 [workspace.dependencies]
@@ -26,4 +26,4 @@ debug-assertions = false
 panic = "abort"
 codegen-units = 1
 lto = true
-</｜｜DSML｜｜ parameter>
+</final_file_content>

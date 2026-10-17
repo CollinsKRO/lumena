@@ -6,6 +6,15 @@ export const CosignRequestSchema = z.object({
   walletAddress: z.string().refine((val) => StrKey.isValidEd25519PublicKey(val), {
     message: "walletAddress must be a valid Stellar public key",
   }),
+  ip: z.string().min(1, "ip must not be empty").optional(),
+  country: z.string().min(1, "country must not be empty").optional(),
+});
+
+export const CosignBatchRequestSchema = z.object({
+  transactions: z
+    .array(CosignRequestSchema)
+    .min(1, "At least one transaction is required")
+    .max(50, "A batch may contain at most 50 transactions"),
 });
 
 export const FeeBumpRequestSchema = z.object({
@@ -83,6 +92,7 @@ export const PolicyRequestSchema = z.object({
 });
 
 export type CosignRequest = z.infer<typeof CosignRequestSchema>;
+export type CosignBatchRequest = z.infer<typeof CosignBatchRequestSchema>;
 export type FeeBumpRequest = z.infer<typeof FeeBumpRequestSchema>;
 export type PolicyRequest = z.infer<typeof PolicyRequestSchema>;
 
