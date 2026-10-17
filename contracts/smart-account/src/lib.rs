@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, token, Address, Env, Map, Vec,
+    contract, contracterror, contractimpl, contracttype, token, Address, Env, Map, Symbol, Vec,
 };
 
 #[contracterror]
@@ -100,6 +100,14 @@ impl SmartAccount {
             return Err(Error::InsufficientBalance);
         }
         client.transfer(&account, &to, &amount);
+
+        event_schema::publish(
+            &env,
+            Symbol::new(&env, "smart_account"),
+            Symbol::new(&env, "transfer"),
+            &account,
+            (token, to, amount),
+        );
         Ok(())
     }
 
