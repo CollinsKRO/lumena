@@ -1,8 +1,22 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import axe from "axe-core";
 import type { LumenClient } from "@lumen/web-sdk";
 import { LumenProvider } from "./context.js";
 import { LumenConnectModal } from "./components/LumenConnectModal.js";
+
+async function expectNoCriticalOrSeriousViolations(container: Element) {
+  const results = await axe.run(container, {
+    rules: {
+      // jsdom does not compute real colors/layout; keep contrast out of scope here.
+      "color-contrast": { enabled: false },
+    },
+  });
+  const serious = results.violations.filter(
+    (violation) => violation.impact === "critical" || violation.impact === "serious",
+  );
+  expect(serious.map((violation) => `${violation.id}: ${violation.help}`)).toEqual([]);
+}
 
 describe("LumenConnectModal", () => {
   function renderModal(
@@ -106,6 +120,55 @@ describe("LumenConnectModal", () => {
     expect(overlay).not.toBeNull();
     fireEvent.click(overlay as Element);
     expect(onClose).toHaveBeenCalledTimes(3);
+  });
+
+  it("has no critical or serious axe-core violations", async () => {
+    const { container } = renderModal({});
+    await expectNoCriticalOrSeriousViolations(container);
+  });
+
+  it("has no critical or serious axe-core violations on the passkey tab", async () => {
+    const { container } = renderModal({});
+    fireEvent.click(screen.getByRole("tab", { name: "Connect Existing Device / Passkey" }));
+    await expectNoCriticalOrSeriousViolations(container);
+  });
+
+  it("has no critical or serious axe-core violations when showing an error", async () => {
+    const createWallet = vi.fn().mockRejectedValue(new Error("Creation failed"));
+    const { container } = renderModal({ createWallet });
+    fireEvent.click(screen.getByRole("button", { name: "Create Seedless Wallet" }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).not.toBeNull();
+    });
+    await expectNoCriticalOrSeriousViolations(container);
+  });
+
+  it("traps focus within the dialog when tabbing", () => {
+    renderModal({});
+    const dialog = screen.getByRole("dialog");
+    const focusable = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    );
+    expect(focusable.length).toBeGreaterThan(0);
+
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+
+    last.focus();
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(document.activeElement).toBe(first);
+
+    first.focus();
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(last);
+  });
+
+  it("moves focus into the dialog when opened", () => {
+    renderModal({});
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.contains(document.activeElement)).toBe(true);
   });
 
   it("applies custom theme properties", () => {

@@ -72,17 +72,22 @@ export type {
   LumenConnectModalTheme,
 } from "./components/LumenConnectModal.js";
 
-export {
-  LumenToast,
-  LumenToastProvider,
-  useToast,
-} from "./components/LumenToast.js";
+// #276 — Error boundary with sanitized diagnostics export
+export { LumenErrorBoundary } from "./components/LumenErrorBoundary.js";
 export type {
-  Toast,
-  ToastAction,
-  ToastContextValue,
-  ToastStatus,
-  TransactionLifecycleEvent,
-  LumenToastProps,
-  LumenToastProviderProps,
-} from "./components/LumenToast.js";
+  LumenErrorBoundaryProps,
+  LumenErrorDiagnostics,
+} from "./components/LumenErrorBoundary.js";
+
+// #271 — Encrypted client-side wallet state persistence
+export {
+  EncryptedIndexedDBStorage,
+  createEncryptedStorage,
+  deriveStorageKey,
+  purgeExpiredRecords,
+} from "./storage/indexeddb-storage.js";
+export type {
+  EncryptedStorageOptions,
+  StorageRecord,
+  StoredWalletState,
+} from "./storage/indexeddb-storage.js";
