@@ -3,8 +3,18 @@ name: E2E Tests
 on:
   push:
     branches: [ main ]
+    paths:
+      - 'packages/**'
+      - 'contracts/**'
+      - 'docker/**'
+      - '.github/workflows/e2e.yml'
   pull_request:
     branches: [ main ]
+    paths:
+      - 'packages/**'
+      - 'contracts/**'
+      - 'docker/**'
+      - '.github/workflows/e2e.yml'
   workflow_dispatch:
 
 jobs:
@@ -39,15 +49,35 @@ jobs:
       - name: Start Stellar Quickstart container
         run: |
           docker compose -f docker/docker-compose.yml up -d stellar
-          echo "Waiting for Horizon and Soroban RPC..."
-          timeout 120s bash -c 'until curl -s http://localhost:8000/ > /dev/null; do sleep 2; done'
-          echo "Stellar container is online!"
+          echo "Stellar Quickstart container started."
+
+      - name: Wait for Horizon and Soroban RPC readiness
+        run: |
+          echo "Waiting for Horizon..."
+          timeout 180s bash -c 'until curl -sf http://localhost:8000/ > /dev/null; do sleep 2; done'
+          echo "Horizon is online!"
+
+          echo "Waiting for Soroban RPC..."
+          timeout 180s bash -c 'until curl -sf -X POST http://localhost:8000/rpc -H "Content-Type: application/json" -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHealth\"}" > /dev/null; do sleep 2; done'
+          echo "Soroban RPC is online!"
+
+      - name: Verify Stellar container health
+        run: |
+          docker compose -f docker/docker-compose.yml ps
+          curl -sf http://localhost:8000/ > /dev/null
+          curl -sf -X POST http://localhost:8000/rpc -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}'
 
       - name: Run Playwright E2E Tests
         run: pnpm --filter @lumen/web-sdk test:e2e --project=chromium
         env:
           HORIZON_URL: http://localhost:8000
           RPC_URL: http://localhost:8000/rpc
+          NETWORK_PASSPHRASE: "Standalone Network ; February 2017"
+          E2E_ACCOUNT_CREATION: "true"
+          E2E_MULTISIG_SETUP: "true"
+          E2E_COSIGNING: "true"
+          E2E_FEE_BUMP: "true"
+          E2E_LEDGER_CONFIRMATION: "true"
 
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
@@ -56,3 +86,11 @@ jobs:
           name: playwright-report
           path: packages/web-sdk/playwright-report/
           retention-days: 7
+
+      - name: Dump Stellar container logs on failure
+        if: failure()
+        run: docker compose -f docker/docker-compose.yml logs stellar
+
+      - name: Tear down Stellar Quickstart container
+        if: always()
+        run: docker compose -f docker/docker-compose.yml down -v

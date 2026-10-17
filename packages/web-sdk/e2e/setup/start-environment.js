@@ -87,15 +87,26 @@ async function main() {
   const cosignerKeypair = Keypair.random();
   const feePayerKeypair = Keypair.random();
   const destinationKeypair = Keypair.random();
+  // Additional fixtures for issue #304 E2E scenarios.
+  const multisigSignerKeypair = Keypair.random();
+  const coSignerKeypair = Keypair.random();
+  const feeBumpSourceKeypair = Keypair.random();
+  const ledgerConfirmationKeypair = Keypair.random();
 
-  console.log(`[E2E Setup] Requesting airdrop for sponsor: ${sponsorKeypair.publicKey()}`);
-  await rpc.requestAirdrop(sponsorKeypair.publicKey());
+  const fundedKeypairs = [
+    ["sponsor", sponsorKeypair],
+    ["fee-payer", feePayerKeypair],
+    ["destination", destinationKeypair],
+    ["multisig-signer", multisigSignerKeypair],
+    ["co-signer", coSignerKeypair],
+    ["fee-bump-source", feeBumpSourceKeypair],
+    ["ledger-confirmation", ledgerConfirmationKeypair],
+  ];
 
-  console.log(`[E2E Setup] Requesting airdrop for fee-payer: ${feePayerKeypair.publicKey()}`);
-  await rpc.requestAirdrop(feePayerKeypair.publicKey());
-
-  console.log(`[E2E Setup] Requesting airdrop for destination: ${destinationKeypair.publicKey()}`);
-  await rpc.requestAirdrop(destinationKeypair.publicKey());
+  for (const [label, keypair] of fundedKeypairs) {
+    console.log(`[E2E Setup] Requesting airdrop for ${label}: ${keypair.publicKey()}`);
+    await rpc.requestAirdrop(keypair.publicKey());
+  }
 
   console.log("[E2E Setup] Writing e2e-config.json...");
   const config = {
@@ -107,10 +118,45 @@ async function main() {
     sponsorPublicKey: sponsorKeypair.publicKey(),
     serverPublicKey: cosignerKeypair.publicKey(),
     destinationPublicKey: destinationKeypair.publicKey(),
+    // Multisig setup fixtures.
+    multisigSignerSecret: multisigSignerKeypair.secret(),
+    multisigSignerPublicKey: multisigSignerKeypair.publicKey(),
+    // Co-signing fixtures.
+    coSignerSecret: coSignerKeypair.secret(),
+    coSignerPublicKey: coSignerKeypair.publicKey(),
+    // Fee-bump fixtures.
+    feeBumpSourceSecret: feeBumpSourceKeypair.secret(),
+    feeBumpSourcePublicKey: feeBumpSourceKeypair.publicKey(),
+    feePayerSecret: feePayerKeypair.secret(),
+    feePayerPublicKey: feePayerKeypair.publicKey(),
+    // Ledger confirmation fixtures.
+    ledgerConfirmationSecret: ledgerConfirmationKeypair.secret(),
+    ledgerConfirmationPublicKey: ledgerConfirmationKeypair.publicKey(),
   };
 
   writeFileSync(CONFIG_OUTPUT, JSON.stringify(config, null, 2), "utf-8");
   console.log("[E2E Setup] Configuration written to:", CONFIG_OUTPUT);
+
+  // Expose the environment variables consumed by the E2E specs (issue #304).
+  process.env.E2E_NETWORK = config.network;
+  process.env.E2E_HORIZON_URL = config.horizonUrl;
+  process.env.E2E_RPC_URL = config.rpcUrl;
+  process.env.E2E_SERVER_URL = config.serverUrl;
+  process.env.E2E_SPONSOR_SECRET = config.sponsorSecret;
+  process.env.E2E_SPONSOR_PUBLIC_KEY = config.sponsorPublicKey;
+  process.env.E2E_SERVER_PUBLIC_KEY = config.serverPublicKey;
+  process.env.E2E_DESTINATION_PUBLIC_KEY = config.destinationPublicKey;
+  process.env.E2E_MULTISIG_SIGNER_SECRET = config.multisigSignerSecret;
+  process.env.E2E_MULTISIG_SIGNER_PUBLIC_KEY = config.multisigSignerPublicKey;
+  process.env.E2E_COSIGNER_SECRET = config.coSignerSecret;
+  process.env.E2E_COSIGNER_PUBLIC_KEY = config.coSignerPublicKey;
+  process.env.E2E_FEE_BUMP_SOURCE_SECRET = config.feeBumpSourceSecret;
+  process.env.E2E_FEE_BUMP_SOURCE_PUBLIC_KEY = config.feeBumpSourcePublicKey;
+  process.env.E2E_FEE_PAYER_SECRET = config.feePayerSecret;
+  process.env.E2E_FEE_PAYER_PUBLIC_KEY = config.feePayerPublicKey;
+  process.env.E2E_LEDGER_CONFIRMATION_SECRET = config.ledgerConfirmationSecret;
+  process.env.E2E_LEDGER_CONFIRMATION_PUBLIC_KEY = config.ledgerConfirmationPublicKey;
+  process.env.E2E_CONFIG_PATH = CONFIG_OUTPUT;
 
   console.log("[E2E Setup] Starting @lumen/server on port", SERVER_PORT);
   const serverResult = createServer({

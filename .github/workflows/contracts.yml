@@ -1,0 +1,155 @@
+name: Contracts CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'contracts/**'
+      - 'packages/core/src/soroban/**'
+      - '.github/workflows/contracts.yml'
+  pull_request:
+    paths:
+      - 'contracts/**'
+      - 'packages/core/src/soroban/**'
+      - '.github/workflows/contracts.yml'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  WASM_TARGET: wasm32-unknown-unknown
+  SIZE_BUDGET_BYTES: 65536
+
+jobs:
+  build-contracts:
+    name: Build, Optimize & Export Contracts
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.WASM_TARGET }}
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install wasm-opt (binaryen)
+        run: |
+          set -euo pipefail
+          BINARYEN_VERSION=116
+          curl -sSL "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/binaryen-version_${BINARYEN_VERSION}-x86_64-linux.tar.gz" -o binaryen.tar.gz
+          tar -xzf binaryen.tar.gz
+          sudo cp "binaryen-version_${BINARYEN_VERSION}/bin/wasm-opt" /usr/local/bin/wasm-opt
+          sudo chmod +x /usr/local/bin/wasm-opt
+          wasm-opt --version
+
+      - name: Build contracts (wasm32 release)
+        run: cargo build --target ${{ env.WASM_TARGET }} --release
+
+      - name: Optimize WASM binaries and enforce size budget
+        id: optimize
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/wasm
+          shopt -s nullglob
+          wasm_files=(target/${WASM_TARGET}/release/*.wasm)
+          if [ ${#wasm_files[@]} -eq 0 ]; then
+            echo "::error::No WASM binaries were produced by the build."
+            exit 1
+          fi
+          failed=0
+          for wasm in "${wasm_files[@]}"; do
+            name="$(basename "$wasm")"
+            out="artifacts/wasm/${name}"
+            echo "Optimizing ${name}..."
+            wasm-opt -Oz "$wasm" -o "$out"
+            size=$(stat -c%s "$out")
+            echo "${name}: ${size} bytes"
+            if [ "$size" -gt "${SIZE_BUDGET_BYTES}" ]; then
+              echo "::error file=${out}::${name} exceeds the 64KB size budget (${size} > ${SIZE_BUDGET_BYTES} bytes)."
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::One or more WASM binaries exceed the 64KB size budget."
+            exit 1
+          fi
+          echo "All WASM binaries are within the 64KB size budget."
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate TypeScript interface definitions
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/typescript
+          shopt -s nullglob
+          wasm_files=(artifacts/wasm/*.wasm)
+          if [ ${#wasm_files[@]} -eq 0 ]; then
+            echo "::error::No optimized WASM binaries available for ABI export."
+            exit 1
+          fi
+          for wasm in "${wasm_files[@]}"; do
+            name="$(basename "$wasm" .wasm)"
+            echo "Generating TypeScript bindings for ${name}..."
+            if command -v stellar >/dev/null 2>&1; then
+              stellar contract bindings typescript \
+                --wasm "$wasm" \
+                --output-dir "artifacts/typescript/${name}" \
+                --overwrite
+            else
+              node -e "
+                const fs = require('fs');
+                const path = require('path');
+                const { parseContractSpec, generateTypeScript } = require('@lumen/core');
+                const wasmPath = process.argv[1];
+                const name = process.argv[2];
+                const outDir = path.join('artifacts', 'typescript', name);
+                fs.mkdirSync(outDir, { recursive: true });
+                const wasm = fs.readFileSync(wasmPath);
+                const spec = parseContractSpec(wasm);
+                const ts = generateTypeScript(spec);
+                fs.writeFileSync(path.join(outDir, 'index.ts'), ts);
+                console.log('Wrote ' + path.join(outDir, 'index.ts'));
+              " "$wasm" "$name"
+            fi
+          done
+
+      - name: Upload WASM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: contracts-wasm
+          path: artifacts/wasm/*.wasm
+          if-no-files-found: error
+
+      - name: Upload TypeScript interface definitions
+        uses: actions/upload-artifact@v4
+        with:
+          name: contracts-typescript
+          path: artifacts/typescript/**
+          if-no-files-found: error

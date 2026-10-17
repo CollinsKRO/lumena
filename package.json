@@ -12,12 +12,17 @@
     "lint": "npm run lint --workspaces --if-present",
     "lint:security": "eslint --no-eslintrc --config scripts/linter/eslint.config.js --ext .js,.jsx,.ts,.tsx .",
     "typecheck": "npm run typecheck --workspaces --if-present",
+    "docs:dev": "astro dev --root docs",
+    "docs:build": "astro build --root docs",
+    "docs:preview": "astro preview --root docs",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "npm run build && changeset publish"
   },
   "devDependencies": {
     "@changesets/cli": "^2.27.7",
+    "astro": "^4.15.0",
+    "@astrojs/starlight": "^0.27.0",
     "fast-check": "^3.19.0"
   }
 }

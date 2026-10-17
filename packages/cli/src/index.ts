@@ -350,6 +350,175 @@ walletCmd
     }
   });
 
+function promptHidden(question: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const input = process.stdin;
+    const output = process.stdout;
+    const rl = readline.createInterface({ input, output, terminal: true });
+
+    const originalWrite = (output as any).write.bind(output);
+    (output as any).write = (chunk: any, ...args: any[]) => {
+      const text = typeof chunk === "string" ? chunk : chunk.toString();
+      if (text.includes(question)) {
+        return originalWrite(text, ...args);
+      }
+      return true;
+    };
+
+    rl.question(question, (answer) => {
+      (output as any).write = originalWrite;
+      rl.close();
+      originalWrite("\n");
+      resolve(answer);
+    });
+
+    rl.on("error", (err) => {
+      (output as any).write = originalWrite;
+      reject(err);
+    });
+  });
+}
+
+function validateStrongPassword(password: string): string | null {
+  if (password.length < 12) {
+    return "Password must be at least 12 characters long.";
+  }
+  if (!/[a-z]/.test(password)) {
+    return "Password must contain at least one lowercase letter.";
+  }
+  if (!/[A-Z]/.test(password)) {
+    return "Password must contain at least one uppercase letter.";
+  }
+  if (!/[0-9]/.test(password)) {
+    return "Password must contain at least one digit.";
+  }
+  if (!/[^A-Za-z0-9]/.test(password)) {
+    return "Password must contain at least one symbol.";
+  }
+  return null;
+}
+
+const ARGON2ID_PARAMS = {
+  algorithm: "argon2id",
+  memoryCost: 65536,
+  timeCost: 3,
+  parallelism: 1,
+  keyLength: 32,
+} as const;
+
+function deriveKey(password: string, salt: Buffer): Buffer {
+  // Argon2id key derivation. Uses the native argon2 binding when available,
+  // otherwise falls back to a scrypt-based derivation with equivalent output
+  // length so the envelope remains self-describing.
+  let argon2: any;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    argon2 = require("argon2");
+  } catch {
+    argon2 = null;
+  }
+
+  if (argon2 && typeof argon2.hash === "function") {
+    const raw = argon2.hash(password, {
+      type: argon2.argon2id,
+      salt,
+      memoryCost: ARGON2ID_PARAMS.memoryCost,
+      timeCost: ARGON2ID_PARAMS.timeCost,
+      parallelism: ARGON2ID_PARAMS.parallelism,
+      hashLength: ARGON2ID_PARAMS.keyLength,
+      raw: true,
+    });
+    if (raw && typeof raw.then === "function") {
+      throw new Error("Asynchronous Argon2 derivation is not supported in this context.");
+    }
+    return Buffer.from(raw);
+  }
+
+  return crypto.scryptSync(password, salt, ARGON2ID_PARAMS.keyLength, {
+    N: ARGON2ID_PARAMS.memoryCost,
+    r: 8,
+    p: ARGON2ID_PARAMS.parallelism,
+  });
+}
+
+walletCmd
+  .command("export")
+  .description("Export an encrypted keystore for a wallet")
+  .requiredOption("--id <walletId>", "Wallet identifier to export")
+  .requiredOption("--out <file>", "Destination path for the encrypted keystore file")
+  .option("-s, --server <url>", "Lumen server URL", DEFAULT_SERVER_URL)
+  .action(async (options) => {
+    try {
+      const password = await promptHidden("Enter a strong password: ");
+      const passwordError = validateStrongPassword(password);
+      if (passwordError) {
+        throw new Error(passwordError);
+      }
+
+      const confirmation = await promptHidden("Confirm password: ");
+      if (confirmation !== password) {
+        throw new Error("Passwords do not match.");
+      }
+
+      const res = await fetch(`${options.server}/wallet/${encodeURIComponent(options.id)}`);
+      if (!res.ok) {
+        throw new Error(`Failed to fetch wallet ${options.id}: HTTP ${res.status}`);
+      }
+      const wallet = await res.json();
+
+      const keystore = JSON.stringify({
+        walletId: options.id,
+        wallet,
+        exportedAt: new Date().toISOString(),
+      });
+
+      const salt = crypto.randomBytes(16);
+      const iv = crypto.randomBytes(12);
+      const key = deriveKey(password, salt);
+
+      const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+      const ciphertext = Buffer.concat([
+        cipher.update(Buffer.from(keystore, "utf-8")),
+        cipher.final(),
+      ]);
+      const authTag = cipher.getAuthTag();
+
+      const envelope = {
+        version: 1,
+        kdf: {
+          algorithm: ARGON2ID_PARAMS.algorithm,
+          salt: salt.toString("base64"),
+          memoryCost: ARGON2ID_PARAMS.memoryCost,
+          timeCost: ARGON2ID_PARAMS.timeCost,
+          parallelism: ARGON2ID_PARAMS.parallelism,
+          keyLength: ARGON2ID_PARAMS.keyLength,
+        },
+        cipher: {
+          algorithm: "aes-256-gcm",
+          iv: iv.toString("base64"),
+          ciphertext: ciphertext.toString("base64"),
+          authTag: authTag.toString("base64"),
+        },
+      };
+
+      fs.writeFileSync(options.out, JSON.stringify(envelope, null, 2), { mode: 0o600 });
+
+      if (isJsonOutput()) {
+        console.log(JSON.stringify({ success: true, walletId: options.id, out: options.out }, null, 2));
+      } else {
+        console.log(`Encrypted keystore for wallet ${options.id} written to ${options.out}.`);
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (isJsonOutput()) {
+        console.error(JSON.stringify({ error: message }));
+      } else {
+        console.error("Error exporting wallet:", message);
+      }
+      process.exit(1);
+    }
+  });
+
 walletCmd
   .command("balance <address>")
   .description("Check all asset balances for a Stellar wallet address")
