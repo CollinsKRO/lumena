@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
-members = []
+members = [
+  "contracts/smart-account",
+]
 
 [workspace.dependencies]
 soroban-sdk = "22.0.0"
