@@ -104,6 +104,13 @@ export type {
   LumenConnectModalTheme,
 } from "./components/LumenConnectModal.js";
 
+// #263 — Animated real-time transaction activity feed
+export { LumenTransactionFeed } from "./components/LumenTransactionFeed.js";
+export type {
+  LumenTransactionFeedProps,
+  LumenTransactionStatus,
+} from "./components/LumenTransactionFeed.js";
+
 // #266 — QR scanner with camera access, flash toggle, and URI parsing
 export { LumenQrScanner } from "./components/LumenQrScanner.js";
 export type {
