@@ -18,4 +18,12 @@ export { AwsKmsSigner } from "./signers/AwsKmsSigner.js";
 export { GcpKmsSigner } from "./signers/GcpKmsSigner.js";
 export { VaultSigner } from "./signers/VaultSigner.js";
 export { AzureKeyVaultSigner } from "./signers/AzureKeyVaultSigner.js";
-export { CosignRequestSchema, FeeBumpRequestSchema, PolicyRequestSchema } from "./validation.js";
+export {
+  CosignRequestSchema,
+  CosignBatchRequestSchema,
+  FeeBumpRequestSchema,
+  PolicyRequestSchema,
+} from "./validation.js";
+export { FailoverStellarClient } from "./stellar/router.js";
+export { FraudDetector } from "./security/fraud-detector.js";
+export { PrismaPolicyStore, PrismaWalletRegistry } from "./db/repositories.js";
