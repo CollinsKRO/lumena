@@ -1,5 +1,12 @@
-import { createServer } from "./server.js";
-import { EnvSigner, AwsKmsSigner } from "./signers/index.js";
+import { startTracing } from "./tracing.js";
+
+// Must run before any other module is loaded so auto-instrumentation can patch
+// Express, ioredis, and undici before they are required.
+startTracing();
+
+const { createServer } = await import("./server.js");
+const { EnvSigner, AwsKmsSigner } = await import("./signers/index.js");
+const { logger } = await import("./logger.js");
 import type { Signer } from "@lumen/types";
 import { logger } from "./logger.js";
 import { registerShutdownHandlers } from "./lifecycle.js";

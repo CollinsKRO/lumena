@@ -185,6 +185,166 @@ export interface RedisClientInterface {
   zremrangebyscore(key: string, min: string | number, max: string | number): Promise<number>;
   zcard(key: string): Promise<number>;
   keys(pattern: string): Promise<string[]>;
+  publish?(channel: string, message: string): Promise<number>;
+}
+
+/**
+ * Dedicated subscriber connection used for pub/sub. Redis clients in subscriber
+ * mode cannot issue regular commands, so this must be a separate connection
+ * from the one used by {@link RedisPolicyStore}.
+ */
+export interface RedisSubscriberInterface {
+  subscribe(channel: string, listener: (channel: string, message: string) => void): Promise<unknown>;
+  unsubscribe(channel: string): Promise<unknown>;
+  on(event: "error" | "end" | "close" | "reconnecting", listener: (...args: unknown[]) => void): unknown;
+  quit?(): Promise<unknown>;
+  disconnect?(): void;
+}
+
+export const POLICY_UPDATE_CHANNEL = "lumen:policies:updated";
+
+export interface PolicyUpdateEvent {
+  walletId: string;
+  action: "save" | "delete";
+  timestamp: number;
+}
+
+/**
+ * Publishes a policy update event so every replica can invalidate its local
+ * cache. Best-effort: failures are swallowed (and logged) so they never block
+ * or fail the originating API request.
+ */
+export async function publishPolicyUpdate(
+  redis: RedisClientInterface | null | undefined,
+  walletId: string,
+  action: "save" | "delete" = "save",
+): Promise<void> {
+  if (!redis || typeof redis.publish !== "function") return;
+  const event: PolicyUpdateEvent = { walletId, action, timestamp: Date.now() };
+  try {
+    await redis.publish(POLICY_UPDATE_CHANNEL, JSON.stringify(event));
+  } catch (err) {
+    // Best-effort: never propagate publish failures to the caller.
+    console.warn(
+      `[policy] failed to publish update for wallet ${walletId}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
+export type PolicyInvalidationHandler = (event: PolicyUpdateEvent) => void | Promise<void>;
+
+/**
+ * Subscribes to the policy update channel and invokes the registered handler
+ * for each event. Automatically re-subscribes when the connection drops.
+ */
+export class PolicyUpdateSubscriber {
+  private readonly subscriber: RedisSubscriberInterface;
+  private readonly channel: string;
+  private handler: PolicyInvalidationHandler | null = null;
+  private subscribed = false;
+  private closed = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly reconnectDelayMs: number;
+
+  constructor(
+    subscriber: RedisSubscriberInterface,
+    channel: string = POLICY_UPDATE_CHANNEL,
+    reconnectDelayMs: number = 1000,
+  ) {
+    this.subscriber = subscriber;
+    this.channel = channel;
+    this.reconnectDelayMs = reconnectDelayMs;
+  }
+
+  onInvalidate(handler: PolicyInvalidationHandler): void {
+    this.handler = handler;
+  }
+
+  async start(): Promise<void> {
+    this.closed = false;
+    this.subscriber.on("error", (err) => {
+      console.warn(
+        "[policy] subscriber connection error:",
+        err instanceof Error ? err.message : err,
+      );
+      this.scheduleReconnect();
+    });
+    this.subscriber.on("end", () => this.scheduleReconnect());
+    this.subscriber.on("close", () => this.scheduleReconnect());
+    await this.subscribe();
+  }
+
+  private async subscribe(): Promise<void> {
+    if (this.closed || this.subscribed) return;
+    try {
+      await this.subscriber.subscribe(this.channel, (_channel, message) => {
+        this.handleMessage(message);
+      });
+      this.subscribed = true;
+    } catch (err) {
+      console.warn(
+        "[policy] failed to subscribe to policy updates:",
+        err instanceof Error ? err.message : err,
+      );
+      this.scheduleReconnect();
+    }
+  }
+
+  private handleMessage(message: string): void {
+    let event: PolicyUpdateEvent;
+    try {
+      const parsed = JSON.parse(message);
+      if (!parsed || typeof parsed.walletId !== "string") return;
+      event = {
+        walletId: parsed.walletId,
+        action: parsed.action === "delete" ? "delete" : "save",
+        timestamp: typeof parsed.timestamp === "number" ? parsed.timestamp : Date.now(),
+      };
+    } catch {
+      return;
+    }
+    if (!this.handler) return;
+    try {
+      const result = this.handler(event);
+      if (result && typeof (result as Promise<void>).catch === "function") {
+        (result as Promise<void>).catch((err) => {
+          console.warn("[policy] invalidation handler failed:", err);
+        });
+      }
+    } catch (err) {
+      console.warn("[policy] invalidation handler threw:", err);
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (this.closed || this.reconnectTimer) return;
+    this.subscribed = false;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.subscribe();
+    }, this.reconnectDelayMs);
+    // Do not keep the event loop alive solely for reconnection.
+    if (typeof this.reconnectTimer === "object" && this.reconnectTimer !== null) {
+      (this.reconnectTimer as { unref?: () => void }).unref?.();
+    }
+  }
+
+  async stop(): Promise<void> {
+    this.closed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.subscribed) {
+      try {
+        await this.subscriber.unsubscribe(this.channel);
+      } catch {
+        // ignore
+      }
+      this.subscribed = false;
+    }
+  }
 }
 
 export class RedisPolicyStore implements PolicyStore {
@@ -232,11 +392,14 @@ export class RedisPolicyStore implements PolicyStore {
   async savePolicy(policy: Policy): Promise<void> {
     const key = `${this.keyPrefix}policy:${policy.walletId}`;
     await this.redis.set(key, JSON.stringify(policy));
+    // Best-effort broadcast; never blocks or fails the save.
+    void publishPolicyUpdate(this.redis, policy.walletId, "save");
   }
 
   async deletePolicy(walletId: string): Promise<void> {
     const key = `${this.keyPrefix}policy:${walletId}`;
     await this.redis.del(key);
+    void publishPolicyUpdate(this.redis, walletId, "delete");
   }
 
   async recordSpend(

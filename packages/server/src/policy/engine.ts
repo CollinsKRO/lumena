@@ -77,6 +77,32 @@ export class PolicyEngine {
     this.velocityTracking.delete(walletId);
   }
 
+  /**
+   * Invalidate the cached policy and all in-memory tracking state for a wallet.
+   *
+   * This is the entry point used by the Redis pub/sub subscriber
+   * (`lumen:policies:updated`) so that every cluster replica drops stale
+   * policy data as soon as an admin update is published. The next evaluation
+   * for the wallet will fall back to the default policy until the updated
+   * policy is re-loaded into the engine.
+   */
+  invalidatePolicy(walletId: string): void {
+    this.removePolicy(walletId);
+  }
+
+  /**
+   * Invalidate every cached policy and all tracking state.
+   *
+   * Useful when a bulk policy update event is received and the subscriber
+   * cannot determine which wallets were affected.
+   */
+  invalidateAllPolicies(): void {
+    this.policies.clear();
+    this.spendTracking.clear();
+    this.velocityTracking.clear();
+    this.sessionSpendTracking.clear();
+  }
+
   getPolicy(walletId: string): Policy | null {
     return this.policies.get(walletId) ?? null;
   }
@@ -369,33 +395,7 @@ export class PolicyEngine {
     };
   }
 
-  private evaluateRule(rule: PolicyRule, opts: EvaluateOpts): EvaluateResult {
-    switch (rule.type) {
-      case "spend_limit":
-        return this.evaluateSpendLimit(rule as SpendLimit, opts);
-      case "velocity":
-        return this.evaluateVelocity(rule as VelocityRule, opts);
-      case "allowlist":
-        return this.evaluateAllowlist(rule as AllowlistRule, opts);
-      case "blocklist":
-        return this.evaluateBlocklist(rule as BlocklistRule, opts);
-      case "asset_allowlist":
-        return this.evaluateAssetAllowlist(rule as AssetAllowlistRule, opts);
-      case "session_key":
-        return this.evaluateSessionKey(rule as SessionKeyPolicyRule, opts);
-      case "timebounds":
-        return this.evaluateTimeBounds(rule as TimeBoundsRule, opts);
-      case "max_operations":
-        return this.evaluateMaxOperations(rule as MaxOperationsRule, opts);
-      case "fee_limit":
-        return this.evaluateFeeLimit(rule as FeeLimitRule, opts);
-      case "contract_allowlist":
-        return this.evaluateContractAllowlist(rule as ContractAllowlistRule, opts);
-      default:
-        return { approved: true };
-    }
-    return parsed;
-  }
+
 
   private evaluateSpendLimit(rule: SpendLimit, opts: EvaluateOpts): EvaluateResult {
     const { walletAddress } = opts;

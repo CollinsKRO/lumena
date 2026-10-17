@@ -10,10 +10,23 @@ services:
       REDIS_SENTINEL_HOSTS: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
       REDIS_MASTER_NAME: mymaster
       DATABASE_URL: postgres://lumen:lumen@postgres:5432/lumen
+      OTEL_SERVICE_NAME: lumen-server
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_TRACES_SAMPLER: parentbased_always_on
+      PKCS11_LIBRARY_PATH: /usr/lib/softhsm/libsofthsm2.so
+      PKCS11_SLOT_ID: "0"
+      PKCS11_PIN: "1234"
+      PKCS11_KEY_LABEL: lumen-cosigner
     ports:
       - "3000:3000"
     depends_on:
       stellar:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+      softhsm:
         condition: service_healthy
 
   stellar:
@@ -33,5 +46,38 @@ services:
       retries: 30
       start_period: 30s
 
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+
+  softhsm:
+    image: softhsm/softhsm2:latest
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        mkdir -p /var/lib/softhsm/tokens
+        softhsm2-util --init-token --free --label lumen --so-pin 0000 --pin 1234
+        softhsm2-util --import /keys/cosigner.pem --token lumen --label lumen-cosigner --id 01 --pin 1234 || true
+        echo "SoftHSM2 token initialized"
+        exec tail -f /dev/null
+    volumes:
+      - softhsm-tokens:/var/lib/softhsm/tokens
+      - softhsm-keys:/keys
+    healthcheck:
+      test: ["CMD-SHELL", "softhsm2-util --show-slots | grep -q lumen || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
 volumes:
   stellar-data:
+  softhsm-tokens:
+  softhsm-keys:

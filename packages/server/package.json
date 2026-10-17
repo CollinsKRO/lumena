@@ -40,6 +40,9 @@
     "swagger-ui-express": "^5.0.1",
     "zod": "^4.6.5"
   },
+  "optionalDependencies": {
+    "pkcs11js": "^2.1.6"
+  },
   "devDependencies": {
     "@types/cors": "2.8.17",
     "@types/express": "^5.0.0",

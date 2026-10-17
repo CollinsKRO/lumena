@@ -46,3 +46,18 @@ export interface VaultSignerConfig {
   namespace?: string;
   prehashed?: boolean;
 }
+
+export interface Pkcs11SignerConfig {
+  /** Path to the PKCS#11 provider library, e.g. /usr/lib/softhsm/libsofthsm2.so */
+  modulePath: string;
+  /** PKCS#11 slot ID containing the token. */
+  slotId: number;
+  /** PIN used to log into the token session. */
+  pin: string;
+  /** CKA_LABEL of the private key object to sign with. */
+  keyLabel: string;
+  /** Optional CKA_ID of the private key object (used when label is ambiguous). */
+  keyId?: string;
+  /** Optional user PIN, if distinct from the primary PIN. */
+  userPin?: string;
+}

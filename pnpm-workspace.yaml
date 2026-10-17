@@ -2,6 +2,7 @@ packages:
   - "packages/*"
   - "examples/*"
   - "docs"
+  - "contracts/*"
 allowBuilds:
   '@scarf/scarf': false
   esbuild: true
