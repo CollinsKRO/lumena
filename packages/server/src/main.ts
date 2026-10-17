@@ -2,6 +2,7 @@ import { createServer } from "./server.js";
 import { EnvSigner, AwsKmsSigner } from "./signers/index.js";
 import type { Signer } from "@lumen/types";
 import { logger } from "./logger.js";
+import { CanaryDaemon } from "./canary/index.js";
 
 /**
  * SIGNER_PROVIDER controls how private keys are accessed:
@@ -57,7 +58,7 @@ async function buildSigners(): Promise<{ cosigner: Signer; feePayer: Signer }> {
 
 const { cosigner, feePayer } = await buildSigners();
 
-createServer({
+const server = createServer({
   port: parseInt(process.env.PORT ?? "3000"),
   network: (process.env.STELLAR_NETWORK as any) ?? "testnet",
   horizonUrl: process.env.HORIZON_URL,
@@ -70,3 +71,31 @@ createServer({
     : undefined,
   max: process.env.RATE_LIMIT_MAX ? parseInt(process.env.RATE_LIMIT_MAX) : undefined,
 });
+
+// Synthetic transaction monitoring canary (issue #311).
+// Disabled by default; enable with CANARY_ENABLED=true.
+const canaryEnabled = (process.env.CANARY_ENABLED ?? "false").toLowerCase() === "true";
+
+if (canaryEnabled) {
+  const canary = new CanaryDaemon({
+    stellarClient: server.stellarClient,
+    feeSponsor: server.feeSponsor,
+    cosignerPublicKey: await cosigner.publicKey(),
+  });
+
+  canary.start();
+  logger.info("Canary daemon started (CANARY_ENABLED=true)");
+
+  const shutdown = async (signal: string) => {
+    logger.info(`Received ${signal}, stopping canary daemon`);
+    try {
+      await canary.stop();
+      logger.info("Canary daemon stopped");
+    } catch (err) {
+      logger.error("Error stopping canary daemon", err);
+    }
+  };
+
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+}

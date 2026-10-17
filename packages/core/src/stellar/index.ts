@@ -168,6 +168,13 @@ export {
   type StreamTopic,
 } from './stream.js';
 
+export {
+  encodeXdrToUrFrames,
+  decodeUrFrames,
+  type UrFrame,
+  type AirgapOptions,
+} from './airgap.js';
+
 export interface SponsoredAccountResult {
   publicKey: string;
   secretKey: string;

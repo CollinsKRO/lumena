@@ -19,3 +19,4 @@ export { GcpKmsSigner } from "./signers/GcpKmsSigner.js";
 export { VaultSigner } from "./signers/VaultSigner.js";
 export { AzureKeyVaultSigner } from "./signers/AzureKeyVaultSigner.js";
 export { CosignRequestSchema, FeeBumpRequestSchema, PolicyRequestSchema } from "./validation.js";
+export { CanaryDaemon, type CanaryDaemonOpts } from "./canary/index.js";
