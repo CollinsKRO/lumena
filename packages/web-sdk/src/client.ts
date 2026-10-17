@@ -12,9 +12,19 @@ export interface LumenClientOpts {
   network?: StellarNetwork;
   horizonUrl?: string;
   rpcUrl?: string;
-  serverUrl?: string;
-  sponsorSecret: string;
+  serverUrl: string;
+  /**
+   * @deprecated Storing the sponsor secret key in browser environments is a
+   * severe security vulnerability. This field is ignored and will be removed
+   * in a future release. Account sponsorship is now handled exclusively by
+   * calling the backend REST endpoints (POST /wallet/create, POST /fee-bump/submit).
+   */
+  sponsorSecret?: string;
   serverPublicKey: string;
+  /** Optional API key sent as `Authorization: Bearer <apiKey>` on every request. */
+  apiKey?: string;
+  /** Optional extra headers merged into every outgoing request. */
+  headers?: Record<string, string>;
 }
 
 export interface SessionKeyInfo {
@@ -44,40 +54,86 @@ export function createSessionKey(durationSeconds: number = 3600): SessionKeyInfo
 
 export class LumenClient {
   private client: StellarClient;
-  private sponsorKeypair: Keypair;
   private serverPublicKey: string;
-  private serverUrl?: string;
+  private serverUrl: string;
+  private defaultHeaders: Record<string, string>;
   private wallets: Map<string, Wallet> = new Map();
 
   constructor(opts: LumenClientOpts) {
+    if (opts.sponsorSecret !== undefined) {
+      console.warn(
+        "[LumenClient] The `sponsorSecret` option is deprecated and has no effect. " +
+          "Storing sponsor secret keys in browser environments is a severe security vulnerability. " +
+          "Account creation and fee sponsorship are now handled exclusively by backend REST endpoints. " +
+          "Please remove `sponsorSecret` from your LumenClientOpts.",
+      );
+    }
+
     this.client = new StellarClient({
       network: opts.network,
       horizonUrl: opts.horizonUrl,
       rpcUrl: opts.rpcUrl,
     });
-    this.sponsorKeypair = Keypair.fromSecret(opts.sponsorSecret);
     this.serverPublicKey = opts.serverPublicKey;
-    this.serverUrl = opts.serverUrl;
+    this.serverUrl = opts.serverUrl.replace(/\/+$/, "");
+
+    this.defaultHeaders = {
+      "Content-Type": "application/json",
+      ...(opts.apiKey ? { Authorization: `Bearer ${opts.apiKey}` } : {}),
+      ...opts.headers,
+    };
+  }
+
+  /**
+   * Makes an authenticated HTTP request to the configured serverUrl.
+   * All headers (including Authorization) are merged from defaultHeaders.
+   */
+  private async request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+  ): Promise<T> {
+    const res = await fetch(`${this.serverUrl}${path}`, {
+      method,
+      headers: this.defaultHeaders,
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`${method} ${path} failed (${res.status}): ${text}`);
+    }
+    return res.json() as Promise<T>;
   }
 
   createSessionKey(durationSeconds: number = 3600): SessionKeyInfo {
     return createSessionKey(durationSeconds);
   }
 
+  /**
+   * Creates a new sponsored wallet by calling POST /wallet/create on the
+   * backend server. No sponsor secret key is required in the browser.
+   */
   async createWallet(): Promise<{ address: string; id: string }> {
+    const result = await this.request<{ address: string; id?: string }>(
+      "POST",
+      "/wallet/create",
+    );
+
+    // Build a client-side Wallet instance (for balance/send operations) backed
+    // by the address returned from the server. The wallet does not need a
+    // sponsorKeypair — it calls the server for co-signing and fee-bumping.
     const wallet = new Wallet({
       client: this.client,
-      sponsorKeypair: this.sponsorKeypair,
       serverPublicKey: this.serverPublicKey,
       serverUrl: this.serverUrl,
     });
+    // Restore the address from the server response so balance/send work.
+    (wallet as any)._address = result.address;
 
-    const { address } = await wallet.create();
-    const id = address;
-
+    const id = result.id ?? result.address;
     this.wallets.set(id, wallet);
 
-    return { address, id };
+    return { address: result.address, id };
   }
 
   async createWalletWithPasskey(opts?: PasskeyRegistrationOpts): Promise<PasskeyWalletResult> {
@@ -89,19 +145,26 @@ export class LumenClient {
       challenge: opts?.challenge,
     });
 
+    // Register the passkey-derived public key with the server so it can set up
+    // multisig and sponsor the account without the client holding the sponsor key.
+    const result = await this.request<{ address: string; id?: string }>(
+      "POST",
+      "/wallet/create",
+      { ownerPublicKey: keypair.publicKey() },
+    );
+
     const wallet = new Wallet({
       client: this.client,
-      sponsorKeypair: this.sponsorKeypair,
       serverPublicKey: this.serverPublicKey,
       serverUrl: this.serverUrl,
       ownerKeypair: keypair,
     });
+    (wallet as any)._address = result.address;
 
-    const { address } = await wallet.create();
-    const id = address;
+    const id = result.id ?? result.address;
     this.wallets.set(id, wallet);
 
-    return { address, id, credentialId, keypair };
+    return { address: result.address, id, credentialId, keypair };
   }
 
   async signWithPasskey(opts: {
@@ -239,13 +302,7 @@ export class LumenClient {
    * Used by hooks that need to query server-side endpoints directly.
    */
   async get<T>(path: string): Promise<T> {
-    if (!this.serverUrl) throw new Error("serverUrl is required for HTTP calls");
-    const res = await fetch(`${this.serverUrl}${path}`);
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`GET ${path} failed (${res.status}): ${body}`);
-    }
-    return res.json() as Promise<T>;
+    return this.request<T>("GET", path);
   }
 }
 

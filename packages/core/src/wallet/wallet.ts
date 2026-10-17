@@ -9,7 +9,19 @@ import type { ContractSimulationResult, OperationSpec, ScValInput } from "@lumen
 
 export interface WalletOpts {
   client: StellarClient;
-  sponsorKeypair: Keypair;
+  /**
+   * The sponsor keypair used to pay account creation reserves and transaction
+   * fees. Required when the wallet itself calls `createSponsoredAccount` and
+   * `setupMultisig` directly (e.g. server-side usage).
+   *
+   * In browser environments this MUST be omitted — account creation and fee
+   * sponsorship are handled exclusively by calling the backend REST endpoints
+   * (`POST /wallet/create`, `POST /fee-bump/submit`). Passing this field from
+   * browser code is a severe security vulnerability and is now deprecated.
+   *
+   * @deprecated Pass `serverUrl` instead and let the server handle sponsorship.
+   */
+  sponsorKeypair?: Keypair;
   serverPublicKey: string;
   serverUrl?: string;
   ownerKeypair?: Keypair;
@@ -42,7 +54,7 @@ export class InMemoryWalletRegistry implements WalletRegistry {
 
 export class Wallet {
   private client: StellarClient;
-  private sponsorKeypair: Keypair;
+  private sponsorKeypair: Keypair | null;
   private serverPublicKey: string;
   private serverUrl?: string;
   private keyManager: KeyManager;
@@ -63,7 +75,7 @@ export class Wallet {
 
   constructor(opts: WalletOpts) {
     this.client = opts.client;
-    this.sponsorKeypair = opts.sponsorKeypair;
+    this.sponsorKeypair = opts.sponsorKeypair ?? null;
     this.serverPublicKey = opts.serverPublicKey;
     this.serverUrl = opts.serverUrl?.replace(/\/+$/, "");
     this.initialOwnerKeypair = opts.ownerKeypair;
@@ -81,6 +93,15 @@ export class Wallet {
 
   /** Creates, sponsors, configures multisig for, and stores the wallet account. */
   async create(): Promise<{ address: string; publicKey: string }> {
+    if (!this.sponsorKeypair) {
+      throw new Error(
+        "Wallet.create() requires a sponsorKeypair. " +
+          "In browser environments, use LumenClient.createWallet() which delegates " +
+          "account creation to the backend server (POST /wallet/create) without " +
+          "exposing the sponsor secret key.",
+      );
+    }
+
     if (!this._keypair) {
       this._keypair = this.keyManager.generateKeypair();
     }
