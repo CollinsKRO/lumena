@@ -2,14 +2,21 @@
   "name": "@lumen/web-sdk",
   "version": "0.1.0",
   "type": "module",
+  "sideEffects": false,
   "main": "dist/index.js",
+  "module": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
@@ -22,12 +29,20 @@
   },
   "dependencies": {
     "@lumen/core": "workspace:*",
-    "@lumen/types": "workspace:*",
+    "@lumen/types": "workspace:*"
+  },
+  "peerDependencies": {
     "@stellar/stellar-sdk": "^17.0.1"
+  },
+  "peerDependenciesMeta": {
+    "@stellar/stellar-sdk": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@lumen/server": "workspace:*",
     "@playwright/test": "^1.63.0",
+    "@stellar/stellar-sdk": "^17.0.1",
     "@vitest/coverage-v8": "^5.0.0",
     "buffer": "^6.0.3",
     "typescript": "^5.8.0",
