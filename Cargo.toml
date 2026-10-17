@@ -1,19 +1,16 @@
 [workspace]
 resolver = "2"
 members = [
-    "contracts/spend-policy",
-    "contracts/ttl-manager",
-    "contracts/escrow",
-    "contracts/security-utils",
+  "contracts/event-schema",
+  "contracts/sbt-identity",
+  "contracts/smart-account",
 ]
 
 [workspace.dependencies]
-soroban-sdk = { version = "21.0.0", features = ["testutils"] }
-soroban-sdk-no-testutils = { package = "soroban-sdk", version = "21.0.0" }
-syn = { version = "2.0", features = ["full", "parsing", "printing", "proc-macro", "derive"] }
-quote = "1.0"
-proc-macro2 = "1.0"
+soroban-sdk = "22.0.0"
 
+# Soroban charges deployment fees proportional to WASM size, so release
+# builds are tuned for the smallest possible binary.
 [profile.release]
 opt-level = "z"
 overflow-checks = true
@@ -23,4 +20,3 @@ debug-assertions = false
 panic = "abort"
 codegen-units = 1
 lto = true
-</｜｜DSML｜｜ parameter>

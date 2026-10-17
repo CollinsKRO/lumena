@@ -80,7 +80,7 @@ jobs:
             name="$(basename "$wasm")"
             out="artifacts/wasm/${name}"
             echo "Optimizing ${name}..."
-            wasm-opt -Oz "$wasm" -o "$out"
+            wasm-opt -Oz --strip-debug "$wasm" -o "$out"
             size=$(stat -c%s "$out")
             echo "${name}: ${size} bytes"
             if [ "$size" -gt "${SIZE_BUDGET_BYTES}" ]; then
