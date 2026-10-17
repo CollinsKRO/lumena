@@ -78,6 +78,15 @@ export type {
   UseMultiSigApprovalResult,
 } from "./use-multisig-approval.js";
 
+// #260 — Multi-guardian social recovery
+export { useSocialRecovery, deriveRecoveryStatus } from "./use-social-recovery.js";
+export type {
+  RecoveryRequest,
+  RecoveryStatus,
+  UseSocialRecoveryOptions,
+  UseSocialRecoveryResult,
+} from "./use-social-recovery.js";
+
 // #281 — i18n framework
 export { useTranslation, resolveTranslations, translations } from "./i18n/index.js";
 export type { LumenLocale, LumenTranslations, LumenI18nContextValue } from "./i18n/index.js";
