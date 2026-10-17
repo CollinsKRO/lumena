@@ -2,6 +2,7 @@ import { TransactionBuilder, Transaction, Keypair, xdr } from "@stellar/stellar-
 import type { Signer } from "@lumen/types";
 import type { StellarClient } from "@lumen/core";
 import type { WebhookDispatcher } from "../webhook/dispatcher.js";
+import { trackOperation } from "../lifecycle.js";
 
 export interface FeeSponsorOpts {
   client: StellarClient;
@@ -29,66 +30,70 @@ export class FeeSponsorService {
   }
 
   async wrapFeeBump(innerTxXdr: string): Promise<string> {
-    const parsed = TransactionBuilder.fromXDR(innerTxXdr, this.client.networkPassphrase);
-    const innerTx = parsed instanceof Transaction ? parsed : null;
-    if (!innerTx) {
-      throw new Error("Expected a regular transaction, not a fee-bump");
-    }
+    return trackOperation("fee-bump:wrap", async () => {
+      const parsed = TransactionBuilder.fromXDR(innerTxXdr, this.client.networkPassphrase);
+      const innerTx = parsed instanceof Transaction ? parsed : null;
+      if (!innerTx) {
+        throw new Error("Expected a regular transaction, not a fee-bump");
+      }
 
-    // Build the fee-bump envelope.  buildFeeBumpTransaction derives the
-    // fee-source account from a Keypair; we create a public-key-only Keypair
-    // so the private key is never needed here.  Signing uses our Signer
-    // abstraction so the private key stays in KMS / never in memory.
-    const feeSourceKeypair = Keypair.fromPublicKey(this.signer.publicKey());
-    const feeBump = TransactionBuilder.buildFeeBumpTransaction(
-      feeSourceKeypair,
-      this.baseFee,
-      innerTx,
-      this.client.networkPassphrase,
-    );
+      // Build the fee-bump envelope.  buildFeeBumpTransaction derives the
+      // fee-source account from a Keypair; we create a public-key-only Keypair
+      // so the private key is never needed here.  Signing uses our Signer
+      // abstraction so the private key stays in KMS / never in memory.
+      const feeSourceKeypair = Keypair.fromPublicKey(this.signer.publicKey());
+      const feeBump = TransactionBuilder.buildFeeBumpTransaction(
+        feeSourceKeypair,
+        this.baseFee,
+        innerTx,
+        this.client.networkPassphrase,
+      );
 
-    // Sign via the abstracted Signer.
-    const txHash = feeBump.hash();
-    const signature = await this.signer.sign(txHash);
-    const hint = feeSourceKeypair.rawPublicKey().slice(-4);
+      // Sign via the abstracted Signer.
+      const txHash = feeBump.hash();
+      const signature = await this.signer.sign(txHash);
+      const hint = feeSourceKeypair.rawPublicKey().slice(-4);
 
-    feeBump.signatures.push(
-      new xdr.DecoratedSignature({
-        hint,
-        signature: Buffer.from(signature),
-      }),
-    );
+      feeBump.signatures.push(
+        new xdr.DecoratedSignature({
+          hint,
+          signature: Buffer.from(signature),
+        }),
+      );
 
-    return feeBump.toXDR();
+      return feeBump.toXDR();
+    });
   }
 
   async submit(innerTxXdr: string): Promise<{ hash: string; feeBumpHash: string }> {
-    const feeBumpXdr = await this.wrapFeeBump(innerTxXdr);
-    const parsed = TransactionBuilder.fromXDR(feeBumpXdr, this.client.networkPassphrase);
+    return trackOperation("fee-bump:submit", async () => {
+      const feeBumpXdr = await this.wrapFeeBump(innerTxXdr);
+      const parsed = TransactionBuilder.fromXDR(feeBumpXdr, this.client.networkPassphrase);
 
-    const result = await this.client.horizon.submitTransaction(parsed);
+      const result = await this.client.horizon.submitTransaction(parsed);
 
-    if (!result.successful) {
-      throw new Error(`Fee-bump submission failed: ${result.hash}`);
-    }
+      if (!result.successful) {
+        throw new Error(`Fee-bump submission failed: ${result.hash}`);
+      }
 
-    if (this.webhookDispatcher) {
-      this.webhookDispatcher
-        .dispatch("transaction.fee_bump.submitted", {
-          feeSource: this.signer.publicKey(),
-          hash: result.hash,
-          feeBumpHash: result.hash,
-        })
-        .catch(() => {});
+      if (this.webhookDispatcher) {
+        this.webhookDispatcher
+          .dispatch("transaction.fee_bump.submitted", {
+            feeSource: this.signer.publicKey(),
+            hash: result.hash,
+            feeBumpHash: result.hash,
+          })
+          .catch(() => {});
 
-      this.webhookDispatcher
-        .dispatch("transaction.sponsored", {
-          feeSource: this.signer.publicKey(),
-          hash: result.hash,
-        })
-        .catch(() => {});
-    }
+        this.webhookDispatcher
+          .dispatch("transaction.sponsored", {
+            feeSource: this.signer.publicKey(),
+            hash: result.hash,
+          })
+          .catch(() => {});
+      }
 
-    return { hash: result.hash, feeBumpHash: result.hash };
+      return { hash: result.hash, feeBumpHash: result.hash };
+    });
   }
 }
