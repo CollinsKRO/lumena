@@ -6,6 +6,8 @@ import { LumenBalance } from '../src/components/LumenBalance';
 import { LumenConnectModal } from '../src/components/LumenConnectModal';
 import { LumenTransactionFeed } from '../src/components/LumenTransactionFeed';
 import { LumenSwapWidget } from '../src/components/LumenSwapWidget';
+import { LumenQrScanner } from '../src/components/LumenQrScanner';
+import { LumenThemeProvider } from '../src/theme/LumenThemeProvider';
 
 const noop = () => undefined;
 
@@ -286,4 +288,147 @@ export const SwapWidgetDisabled: StoryObj<typeof LumenSwapWidget> = {
     ...SwapWidgetDefault.args,
     disabled: true,
   },
+};
+
+const qrScannerMeta: Meta<typeof LumenQrScanner> = {
+  title: 'Lumen/LumenQrScanner',
+  component: LumenQrScanner,
+  parameters: {
+    layout: 'centered',
+    docs: {
+      description: {
+        component:
+          'Camera-based QR scanner for Stellar public keys and SEP-0007 `web+stellar:pay` URIs. ' +
+          'Camera access and the QR decoder are mocked in Storybook so the UI can be verified without a webcam.',
+      },
+    },
+  },
+  tags: ['autodocs'],
+  argTypes: {
+    active: { control: 'boolean' },
+    facingMode: {
+      control: 'select',
+      options: ['environment', 'user'],
+    },
+    flashEnabled: { control: 'boolean' },
+    onScan: { action: 'scanned' },
+    onError: { action: 'error' },
+    onClose: { action: 'closed' },
+  },
+};
+
+export const QrScannerDefault: StoryObj<typeof LumenQrScanner> = {
+  name: 'Default',
+  args: {
+    active: true,
+    facingMode: 'environment',
+    flashEnabled: false,
+    onScan: noop,
+    onError: noop,
+    onClose: noop,
+  },
+};
+
+export const QrScannerFlashOn: StoryObj<typeof LumenQrScanner> = {
+  name: 'Flash On',
+  args: {
+    ...QrScannerDefault.args,
+    flashEnabled: true,
+  },
+};
+
+export const QrScannerFrontCamera: StoryObj<typeof LumenQrScanner> = {
+  name: 'Front Camera',
+  args: {
+    ...QrScannerDefault.args,
+    facingMode: 'user',
+  },
+};
+
+const themeProviderMeta: Meta<typeof LumenThemeProvider> = {
+  title: 'Lumen/LumenThemeProvider',
+  component: LumenThemeProvider,
+  parameters: {
+    layout: 'padded',
+    docs: {
+      description: {
+        component:
+          'Provides design tokens (`--lumen-primary`, `--lumen-bg`, `--lumen-card-bg`, `--lumen-radius`, ...) ' +
+          'and supports `dark`, `light`, and `system` modes. Toggle the mode control to verify that every ' +
+          'prebuilt Lumen component below updates its colors.',
+      },
+    },
+  },
+  tags: ['autodocs'],
+  argTypes: {
+    mode: {
+      control: 'select',
+      options: ['dark', 'light', 'system'],
+    },
+    primary: { control: 'color' },
+    radius: { control: 'text' },
+  },
+};
+
+const ThemeShowcase = () => (
+  <div style={{ display: 'grid', gap: 16, maxWidth: 480 }}>
+    <LumenWalletCard
+      address="GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUV"
+      balance="1,250.00 XLM"
+      network="testnet"
+      variant="default"
+      showCopyButton
+      onCopy={noop}
+    />
+    <LumenBalance amount="1250.5" symbol="XLM" decimals={2} size="lg" showSymbol />
+    <LumenSwapWidget
+      fromAsset="XLM"
+      toAsset="USDC"
+      fromAmount="100"
+      toAmount="12.5"
+      slippage={0.5}
+      onSwap={noop}
+      onFromAmountChange={noop}
+      onToAmountChange={noop}
+    />
+    <LumenTransactionFeed
+      transactions={sampleTransactions}
+      loading={false}
+      emptyMessage="No transactions yet."
+      maxItems={10}
+      onTransactionClick={noop}
+    />
+  </div>
+);
+
+export const ThemeDark: StoryObj<typeof LumenThemeProvider> = {
+  name: 'Dark',
+  args: {
+    mode: 'dark',
+    primary: '#7c3aed',
+    radius: '12px',
+  },
+  render: (args) => (
+    <LumenThemeProvider {...args}>
+      <ThemeShowcase />
+    </LumenThemeProvider>
+  ),
+};
+
+export const ThemeLight: StoryObj<typeof LumenThemeProvider> = {
+  name: 'Light',
+  args: {
+    ...ThemeDark.args,
+    mode: 'light',
+  },
+  render: ThemeDark.render,
+};
+
+export const ThemeSystem: StoryObj<typeof LumenThemeProvider> = {
+  name: 'System',
+  args: {
+    ...ThemeDark.args,
+    mode: 'system',
+  },
+  render: ThemeDark.render,
 };
