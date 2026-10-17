@@ -7,11 +7,19 @@ on:
       - develop
     paths:
       - 'contracts/**'
+      - 'contracts/paymaster/**'
+      - 'contracts/session-keys/**'
+      - 'contracts/social-recovery/**'
+      - 'contracts/token-sep41/**'
       - 'packages/core/src/soroban/**'
       - '.github/workflows/contracts.yml'
   pull_request:
     paths:
       - 'contracts/**'
+      - 'contracts/paymaster/**'
+      - 'contracts/session-keys/**'
+      - 'contracts/social-recovery/**'
+      - 'contracts/token-sep41/**'
       - 'packages/core/src/soroban/**'
       - '.github/workflows/contracts.yml'
   workflow_dispatch:
@@ -20,6 +28,11 @@ env:
   CARGO_TERM_COLOR: always
   WASM_TARGET: wasm32-unknown-unknown
   SIZE_BUDGET_BYTES: 65536
+  CONTRACT_CRATES: >-
+    contracts/paymaster
+    contracts/session-keys
+    contracts/social-recovery
+    contracts/token-sep41
 
 jobs:
   build-contracts:
@@ -58,6 +71,9 @@ jobs:
           sudo chmod +x /usr/local/bin/wasm-opt
           wasm-opt --version
 
+      - name: Run contract unit tests
+        run: cargo test --workspace --all-features
+
       - name: Build contracts (wasm32 release)
         run: cargo build --workspace --target ${{ env.WASM_TARGET }} --release
 
@@ -70,11 +86,6 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts/wasm
           shopt -s nullglob
-          wasm_files=(target/${WASM_TARGET}/release/*.wasm)
-          if [ ${#wasm_files[@]} -eq 0 ]; then
-            echo "::error::No WASM binaries were produced by the build."
-            exit 1
-          fi
           failed=0
           for wasm in "${wasm_files[@]}"; do
             name="$(basename "$wasm")"
@@ -87,6 +98,18 @@ jobs:
               echo "::error file=${out}::${name} exceeds the 64KB size budget (${size} > ${SIZE_BUDGET_BYTES} bytes)."
               failed=1
             fi
+            for wasm in "${wasm_files[@]}"; do
+              name="$(basename "$wasm")"
+              out="artifacts/wasm/${name}"
+              echo "Optimizing ${name}..."
+              wasm-opt -Oz "$wasm" -o "$out"
+              size=$(stat -c%s "$out")
+              echo "${name}: ${size} bytes"
+              if [ "$size" -gt "${SIZE_BUDGET_BYTES}" ]; then
+                echo "::error file=${out}::${name} exceeds the 64KB size budget (${size} > ${SIZE_BUDGET_BYTES} bytes)."
+                failed=1
+              fi
+            done
           done
           if [ "$failed" -ne 0 ]; then
             echo "::error::One or more WASM binaries exceed the 64KB size budget."

@@ -35,6 +35,61 @@ export class Sep41Token {
   }
 
   /**
+   * Builds an invocation operation for checking an account's spendable balance.
+   */
+  buildSpendableBalanceOperation(address: string): xdr.Operation {
+    return Operation.invokeContractFunction({
+      contract: this.contractId,
+      function: "spendable_balance",
+      args: [new Address(address).toScVal()],
+    });
+  }
+
+  /**
+   * Builds an invocation operation for checking whether an account is authorized.
+   */
+  buildAuthorizedOperation(address: string): xdr.Operation {
+    return Operation.invokeContractFunction({
+      contract: this.contractId,
+      function: "authorized",
+      args: [new Address(address).toScVal()],
+    });
+  }
+
+  /**
+   * Builds an invocation operation for reading the token decimals.
+   */
+  buildDecimalsOperation(): xdr.Operation {
+    return Operation.invokeContractFunction({
+      contract: this.contractId,
+      function: "decimals",
+      args: [],
+    });
+  }
+
+  /**
+   * Builds an invocation operation for reading the token name.
+   */
+  buildNameOperation(): xdr.Operation {
+    return Operation.invokeContractFunction({
+      contract: this.contractId,
+      function: "name",
+      args: [],
+    });
+  }
+
+  /**
+   * Builds an invocation operation for reading the token symbol.
+   */
+  buildSymbolOperation(): xdr.Operation {
+    return Operation.invokeContractFunction({
+      contract: this.contractId,
+      function: "symbol",
+      args: [],
+    });
+  }
+
+  /**
    * Queries balance of an address by calling/simulating the balance method on Soroban RPC.
    */
   async balance(address: string): Promise<bigint> {
