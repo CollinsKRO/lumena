@@ -1,6 +1,5 @@
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import cors, { type CorsOptions } from "cors";
-import rateLimit from "express-rate-limit";
 import {
   createServer as createHttpServer,
   type Server as HttpServer,
@@ -12,11 +11,18 @@ import { Keypair, StrKey } from "@stellar/stellar-sdk";
 import { StellarClient } from "@lumen/core";
 import type { Signer } from "@lumen/types";
 import type { WalletRegistry } from "@lumen/core";
+import type { Redis } from "ioredis";
 import { CosignerService } from "./cosigner/service.js";
 import { FeeSponsorService } from "./fee-sponsor/service.js";
 import { PolicyEngine } from "./policy/engine.js";
 import { FailoverStellarClient, type StellarEndpoint } from "./stellar/router.js";
 import { FraudDetector, type FraudDetectorConfig } from "./security/fraud-detector.js";
+import {
+  createTokenBucketLimiter,
+  type TokenBucketConfig,
+} from "./middleware/rate-limiter.js";
+import { createIdempotencyMiddleware } from "./middleware/idempotency.js";
+import { createRbacMiddleware, type RbacConfig } from "./middleware/rbac.js";
 import {
   CosignRequestSchema,
   CosignBatchRequestSchema,
@@ -38,6 +44,7 @@ import {
 
 import { SponsorMonitorService } from "./fee-sponsor/monitor.js";
 import { WebhookDispatcher } from "./webhook/dispatcher.js";
+import { createGraphQLGateway } from "./graphql/index.js";
 
 /** A single policy decision broadcast on the audit stream. */
 export interface AuditEvent {
@@ -75,6 +82,11 @@ export interface ServerResult {
   auditWebSocketServer: WebSocketServer;
   /** Broadcasts a policy decision to all connected audit stream clients. */
   broadcastAuditEvent: (event: AuditEvent) => void;
+  /**
+   * Stops accepting new connections and drains in-flight requests.
+   * Resolves once the HTTP server has closed (or the grace period elapses).
+   */
+  shutdown: (gracePeriodMs?: number) => Promise<void>;
 }
 
 export interface ServerOpts {
@@ -158,6 +170,30 @@ export interface ServerOpts {
    * server is healthy within 30 seconds.
    */
   readinessCheck?: () => Promise<Record<string, boolean>>;
+  /**
+   * Optional Redis client used by the token bucket rate limiter and the
+   * idempotency middleware. When omitted, an in-memory fallback is used.
+   */
+  redis?: Redis;
+  /**
+   * Token bucket configuration for per-client-IP rate limiting.
+   * `capacity` is the maximum burst size; `refillRate` is the steady-state
+   * number of tokens replenished per second.
+   */
+  ipRateLimit?: TokenBucketConfig;
+  /**
+   * Token bucket configuration for per-wallet-address rate limiting.
+   */
+  walletRateLimit?: TokenBucketConfig;
+  /**
+   * Optional RBAC configuration (JWT secret / role claim) for admin routes.
+   */
+  rbac?: RbacConfig;
+  /**
+   * Grace period (ms) used by the shutdown hook to drain in-flight requests.
+   * Defaults to 15000.
+   */
+  shutdownGracePeriodMs?: number;
 }
 
 /** Creates the Lumen API server, service graph, and policy engine. */
@@ -229,7 +265,7 @@ export function createServer(opts: ServerOpts): ServerResult {
   if (opts.apiKey) {
     app.use((req: Request, res: Response, next: NextFunction) => {
       const cleanPath = (req.path || "").replace(/\/+$/, "") || "/";
-      if (cleanPath === "/health" || cleanPath === "/metrics") {
+      if (cleanPath === "/health" || cleanPath === "/health/deep" || cleanPath === "/metrics") {
         return next();
       }
 
@@ -249,20 +285,29 @@ export function createServer(opts: ServerOpts): ServerResult {
     });
   }
 
-  // Rate Limiting Middleware for /cosign and /fee-bump
-  const rateLimitWindowMs =
+  // Token bucket rate limiting (sliding-window, burst + steady-state refill).
+  // Backward-compatible options map windowMs/max onto bucket capacity/refill.
+  const legacyWindowMs =
     opts.rateLimit?.windowMs ?? opts.rateLimitWindowMs ?? opts.windowMs ?? 60 * 1000;
-  const rateLimitMax = opts.rateLimit?.max ?? opts.rateLimitMax ?? opts.max ?? 100;
+  const legacyMax = opts.rateLimit?.max ?? opts.rateLimitMax ?? opts.max ?? 100;
 
-  const cosignFeeBumpLimiter = rateLimit({
-    windowMs: rateLimitWindowMs,
-    limit: rateLimitMax,
-    max: rateLimitMax,
-    standardHeaders: true,
-    legacyHeaders: false,
-    statusCode: 429,
-    message: { error: "Too Many Requests" },
+  const ipRateLimit: TokenBucketConfig = opts.ipRateLimit ?? {
+    capacity: legacyMax,
+    refillRate: legacyMax / (legacyWindowMs / 1000),
+  };
+  const walletRateLimit: TokenBucketConfig = opts.walletRateLimit ?? {
+    capacity: legacyMax,
+    refillRate: legacyMax / (legacyWindowMs / 1000),
+  };
+
+  const rateLimiter = createTokenBucketLimiter({
+    redis: opts.redis,
+    ip: ipRateLimit,
+    wallet: walletRateLimit,
   });
+
+  const idempotency = createIdempotencyMiddleware({ redis: opts.redis });
+  const rbac = createRbacMiddleware(opts.rbac);
 
   app.use("/docs", swaggerUi.serve, swaggerUi.setup(openApiSpec));
 
@@ -311,6 +356,21 @@ export function createServer(opts: ServerOpts): ServerResult {
   );
 
   app.get(
+    "/health/deep",
+    wrapHandler(async (_req: Request, res: Response) => {
+      const report = await runDeepHealthCheck({
+        client,
+        cosignerSigner: opts.cosignerSigner,
+        feeSponsorService,
+        sponsorMonitorService,
+        readinessCheck: opts.readinessCheck,
+        minSponsorBalance: opts.minSponsorBalance,
+      });
+      res.status(report.healthy ? 200 : 503).json(report);
+    }),
+  );
+
+  app.get(
     "/metrics",
     wrapHandler(async (_req: Request, res: Response) => {
       res.setHeader("Content-Type", register.contentType);
@@ -328,7 +388,8 @@ export function createServer(opts: ServerOpts): ServerResult {
 
   app.post(
     "/cosign",
-    cosignFeeBumpLimiter,
+    rateLimiter,
+    idempotency,
     wrapHandler(async (req: Request, res: Response) => {
       const timer = policyEvaluationDurationSeconds.startTimer();
       try {
@@ -399,7 +460,8 @@ export function createServer(opts: ServerOpts): ServerResult {
 
   app.post(
     "/fee-bump",
-    cosignFeeBumpLimiter,
+    rateLimiter,
+    idempotency,
     wrapHandler(async (req: Request, res: Response) => {
       feeBumpRequestsTotal.inc();
       const parsed = FeeBumpRequestSchema.safeParse(req.body);
@@ -414,7 +476,8 @@ export function createServer(opts: ServerOpts): ServerResult {
 
   app.post(
     "/fee-bump/submit",
-    cosignFeeBumpLimiter,
+    rateLimiter,
+    idempotency,
     wrapHandler(async (req: Request, res: Response) => {
       feeBumpRequestsTotal.inc();
       const parsed = FeeBumpRequestSchema.safeParse(req.body);
@@ -437,6 +500,8 @@ export function createServer(opts: ServerOpts): ServerResult {
 
   app.post(
     "/policy",
+    rbac.requirePermission("policy:write"),
+    idempotency,
     wrapHandler(async (req: Request, res: Response) => {
       const parsed = PolicyRequestSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -461,6 +526,8 @@ export function createServer(opts: ServerOpts): ServerResult {
 
   app.put(
     "/policy/:walletId",
+    rbac.requirePermission("policy:write"),
+    idempotency,
     wrapHandler(async (req: Request, res: Response) => {
       const parsed = PolicyRequestSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -487,7 +554,7 @@ export function createServer(opts: ServerOpts): ServerResult {
     }),
   );
 
-  app.delete("/policy/:walletId", (req: Request, res: Response) => {
+  app.delete("/policy/:walletId", rbac.requirePermission("policy:write"), (req: Request, res: Response) => {
     const walletId = req.params.walletId as string;
     if (!policyEngine.getPolicy(walletId)) {
       throw new PolicyError("No policy found", 404);
@@ -499,6 +566,7 @@ export function createServer(opts: ServerOpts): ServerResult {
 
   app.post(
     "/wallet/create",
+    idempotency,
     wrapHandler(async (req: Request, res: Response) => {
       const { Wallet } = await import("@lumen/core");
 
@@ -531,6 +599,7 @@ export function createServer(opts: ServerOpts): ServerResult {
   // #169 — GET /wallets: list all registered wallets
   app.get(
     "/wallets",
+    rbac.requirePermission("wallets:read"),
     wrapHandler(async (req: Request, res: Response) => {
       if (!opts.walletRegistry) {
         res.json({ wallets: [], total: 0 });
@@ -617,6 +686,8 @@ export function createServer(opts: ServerOpts): ServerResult {
 
   app.post(
     "/webhooks",
+    rbac.requirePermission("webhooks:write"),
+    idempotency,
     wrapHandler(async (req: Request, res: Response) => {
       const parsed = WebhookRequestSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -633,7 +704,7 @@ export function createServer(opts: ServerOpts): ServerResult {
     res.json(webhookDispatcher.list().map(({ secret: _secret, ...rest }) => rest));
   });
 
-  app.delete("/webhooks/:id", (req: Request, res: Response) => {
+  app.delete("/webhooks/:id", rbac.requirePermission("webhooks:write"), (req: Request, res: Response) => {
     const deleted = webhookDispatcher.unregister(req.params.id as string);
     if (!deleted) {
       res.status(404).json({ error: "Webhook not found" });
@@ -644,6 +715,8 @@ export function createServer(opts: ServerOpts): ServerResult {
 
   app.patch(
     "/webhooks/:id",
+    rbac.requirePermission("webhooks:write"),
+    idempotency,
     wrapHandler(async (req: Request, res: Response) => {
       const id = req.params.id as string;
 
@@ -665,6 +738,8 @@ export function createServer(opts: ServerOpts): ServerResult {
 
   app.post(
     "/webhooks/:id/test",
+    rbac.requirePermission("webhooks:write"),
+    idempotency,
     wrapHandler(async (req: Request, res: Response) => {
       const id = req.params.id as string;
 
@@ -689,6 +764,10 @@ export function createServer(opts: ServerOpts): ServerResult {
       res.json(await webhookDispatcher.getDeliveryLog());
     }),
   );
+
+  // GraphQL gateway (queries + SSE subscriptions) served alongside the REST endpoints.
+  const graphqlGateway = createGraphQLGateway({ client, policyEngine });
+  app.use(graphqlGateway.graphqlEndpoint, graphqlGateway);
 
   app.use(errorHandler);
 
@@ -736,8 +815,11 @@ export function createServer(opts: ServerOpts): ServerResult {
     );
   });
 
-  const gracefulShutdown = (signal: string) => {
-    logger.info({ signal }, `${signal} received, shutting down gracefully`);
+  /**
+   * Stops accepting new connections and drains in-flight requests within the
+   * grace period. Used by the lifecycle handler (SIGINT/SIGTERM).
+   */
+  const shutdown = (gracePeriodMs: number = opts.shutdownGracePeriodMs ?? 15000): Promise<void> => {
     sponsorMonitorService.stop();
     stellarRouter?.stop();
 
@@ -746,30 +828,40 @@ export function createServer(opts: ServerOpts): ServerResult {
     }
     auditWebSocketServer.close();
 
-    server.close(() => {
-      logger.info("HTTP server closed");
-      process.exit(0);
-    });
-
-    const timeout = setTimeout(() => {
-      logger.error("Forced shutdown after timeout");
-      process.exit(1);
-    }, 30000);
-
-    const checkInterval = setInterval(() => {
-      if (activeRequests === 0) {
-        clearInterval(checkInterval);
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timeout);
-        server.close(() => {
-          logger.info("HTTP server closed");
-          process.exit(0);
-        });
-      }
-    }, 100);
-  };
+        clearInterval(checkInterval);
+        resolve();
+      };
 
-  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
-  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+      const timeout = setTimeout(() => {
+        logger.error({ gracePeriodMs }, "Forced shutdown after grace period elapsed");
+        finish();
+      }, gracePeriodMs);
+      if (typeof timeout.unref === "function") timeout.unref();
+
+      // Stop accepting new connections; the callback fires once all in-flight
+      // requests have completed.
+      server.close(() => {
+        logger.info("HTTP server closed");
+        finish();
+      });
+
+      const checkInterval = setInterval(() => {
+        if (activeRequests === 0) {
+          server.close(() => {
+            logger.info("HTTP server closed");
+            finish();
+          });
+        }
+      }, 100);
+      if (typeof checkInterval.unref === "function") checkInterval.unref();
+    });
+  };
 
   return {
     app,
@@ -784,5 +876,6 @@ export function createServer(opts: ServerOpts): ServerResult {
     webhookDispatcher,
     auditWebSocketServer,
     broadcastAuditEvent,
+    shutdown,
   };
 }

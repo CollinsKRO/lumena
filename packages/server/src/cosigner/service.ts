@@ -3,7 +3,7 @@ import type { Signer } from "@lumen/types";
 import { validateTimeBounds, type StellarClient } from "@lumen/core";
 import type { PolicyEngine } from "../policy/engine.js";
 import type { WebhookDispatcher } from "../webhook/dispatcher.js";
-import type { FraudDetector } from "../security/fraud-detector.js";
+import { trackOperation } from "../lifecycle.js";
 
 export interface CosignerOpts {
   client: StellarClient;
@@ -70,6 +70,10 @@ export class CosignerService {
   }
 
   async cosign(request: CosignRequest): Promise<CosignResult> {
+    return trackOperation(() => this.cosignInternal(request));
+  }
+
+  private async cosignInternal(request: CosignRequest): Promise<CosignResult> {
     const parsed = TransactionBuilder.fromXDR(
       request.xdr,
       this.client.networkPassphrase

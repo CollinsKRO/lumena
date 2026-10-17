@@ -22,6 +22,11 @@
       "import": "./dist/telemetry/index.js",
       "default": "./dist/telemetry/index.js"
     },
+    "./crypto": {
+      "types": "./dist/crypto/zk.d.ts",
+      "import": "./dist/crypto/zk.js",
+      "default": "./dist/crypto/zk.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -41,17 +46,27 @@
     "@lumen/types": "workspace:*"
   },
   "peerDependencies": {
-    "@stellar/stellar-sdk": "^17.0.1"
+    "@noble/curves": "^1.8.0",
+    "@stellar/stellar-sdk": "^17.0.1",
+    "snarkjs": "^0.7.5"
   },
   "peerDependenciesMeta": {
+    "@noble/curves": {
+      "optional": true
+    },
     "@stellar/stellar-sdk": {
+      "optional": true
+    },
+    "snarkjs": {
       "optional": true
     }
   },
   "devDependencies": {
+    "@noble/curves": "^1.8.0",
     "@stellar/stellar-sdk": "^17.0.1",
     "@vitest/coverage-v8": "^5.0.0",
     "fast-check": "^3.23.0",
+    "snarkjs": "^0.7.5",
     "typescript": "^5.8.0",
     "vitest": "^5.0.0"
   }

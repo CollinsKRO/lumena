@@ -2,6 +2,7 @@ import { createServer } from "./server.js";
 import { EnvSigner, AwsKmsSigner } from "./signers/index.js";
 import type { Signer } from "@lumen/types";
 import { logger } from "./logger.js";
+import { registerShutdownHandlers } from "./lifecycle.js";
 
 /**
  * SIGNER_PROVIDER controls how private keys are accessed:
@@ -57,46 +58,7 @@ async function buildSigners(): Promise<{ cosigner: Signer; feePayer: Signer }> {
 
 const { cosigner, feePayer } = await buildSigners();
 
-/** Parse a comma-separated list of URLs, trimming blanks and duplicates. */
-function parseUrlList(raw: string | undefined): string[] | undefined {
-  if (!raw) return undefined;
-  const urls = raw
-    .split(",")
-    .map((u) => u.trim())
-    .filter((u) => u.length > 0);
-  return urls.length > 0 ? Array.from(new Set(urls)) : undefined;
-}
-
-function parseOptionalNumber(raw: string | undefined): number | undefined {
-  if (raw === undefined || raw.trim() === "") return undefined;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : undefined;
-}
-
-// Multi-region endpoint pools (issue #240). HORIZON_URLS / SOROBAN_RPC_URLS
-// take precedence over the single-endpoint HORIZON_URL / SOROBAN_RPC_URL.
-const horizonUrls = parseUrlList(process.env.HORIZON_URLS);
-const rpcUrls = parseUrlList(process.env.SOROBAN_RPC_URLS);
-
-// Fraud detection tuning (issue #241).
-const fraudMaxRiskScore = parseOptionalNumber(process.env.FRAUD_MAX_RISK_SCORE);
-const fraudVelocityMultiplier = parseOptionalNumber(
-  process.env.FRAUD_VELOCITY_MULTIPLIER,
-);
-
-// Relational persistence (issue #242). When DATABASE_URL is set we back the
-// policy engine and wallet registry with Prisma/PostgreSQL instead of Redis.
-const databaseUrl = process.env.DATABASE_URL;
-let policyStore: import("./db/index.js").PrismaPolicyStore | undefined;
-if (databaseUrl) {
-  const { PrismaClient } = await import("@prisma/client");
-  const { PrismaPolicyStore } = await import("./db/index.js");
-  const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
-  policyStore = new PrismaPolicyStore(prisma);
-  logger.info("Using Prisma/PostgreSQL persistence (DATABASE_URL set)");
-}
-
-createServer({
+const serverResult = createServer({
   port: parseInt(process.env.PORT ?? "3000"),
   network: (process.env.STELLAR_NETWORK as any) ?? "testnet",
   horizonUrl: process.env.HORIZON_URL,
@@ -114,4 +76,14 @@ createServer({
     ? parseInt(process.env.RATE_LIMIT_WINDOW_MS)
     : undefined,
   max: process.env.RATE_LIMIT_MAX ? parseInt(process.env.RATE_LIMIT_MAX) : undefined,
+});
+
+// Install SIGINT/SIGTERM handlers so Kubernetes pod rollouts drain in-flight
+// co-sign and submit operations before the process exits cleanly (code 0).
+registerShutdownHandlers({
+  server: serverResult.server,
+  redis: serverResult.redis,
+  gracePeriodMs: process.env.SHUTDOWN_GRACE_PERIOD_MS
+    ? parseInt(process.env.SHUTDOWN_GRACE_PERIOD_MS)
+    : undefined,
 });

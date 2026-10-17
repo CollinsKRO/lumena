@@ -10,6 +10,7 @@ import {
 } from "@stellar/stellar-sdk";
 import { createServer, type ServerResult } from "../server.js";
 import { EnvSigner } from "../signers/EnvSigner.js";
+import { signTestToken } from "./helpers/jwt.js";
 
 describe("Webhooks API & Server Integration", () => {
   const cosignerKeypair = Keypair.random();
@@ -98,6 +99,65 @@ describe("Webhooks API & Server Integration", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual(history);
     vi.restoreAllMocks();
+  });
+
+  it("denies PATCH /webhooks to auditor and operator roles and logs the attempt", async () => {
+    const auditorToken = signTestToken({ sub: "auditor-1", roles: ["auditor"] });
+    const operatorToken = signTestToken({ sub: "operator-1", roles: ["operator"] });
+
+    for (const [actorId, token] of [
+      ["auditor-1", auditorToken],
+      ["operator-1", operatorToken],
+    ] as const) {
+      const res = await fetch(`${BASE_URL}/webhooks`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ events: ["transaction.cosigned"] }),
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBeDefined();
+    }
+
+    const auditEntries = serverResult.auditLogger.getEntries();
+    const denied = auditEntries.filter(
+      (e) => e.action === "webhooks.update" && e.outcome === "denied",
+    );
+    expect(denied.map((e) => e.actorId)).toEqual(
+      expect.arrayContaining(["auditor-1", "operator-1"]),
+    );
+    for (const entry of denied) {
+      expect(entry.timestamp).toBeDefined();
+    }
+  });
+
+  it("allows admin role to PATCH /webhooks", async () => {
+    const adminToken = signTestToken({ sub: "admin-1", roles: ["admin"] });
+
+    const res = await fetch(`${BASE_URL}/webhooks`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${adminToken}`,
+      },
+      body: JSON.stringify({ events: ["transaction.cosigned"] }),
+    });
+
+    expect(res.status).toBe(200);
+
+    const auditEntries = serverResult.auditLogger.getEntries();
+    expect(
+      auditEntries.some(
+        (e) =>
+          e.action === "webhooks.update" &&
+          e.outcome === "allowed" &&
+          e.actorId === "admin-1",
+      ),
+    ).toBe(true);
   });
 
   it("dispatches transaction.cosigned webhook event on successful cosign", async () => {

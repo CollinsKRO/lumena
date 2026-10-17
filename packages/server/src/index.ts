@@ -13,17 +13,35 @@ export {
   type WebhookDispatcherOpts,
 } from "./webhook/dispatcher.js";
 export { createServer, type ServerOpts, type ServerResult } from "./server.js";
+export { createGraphQLGateway, type GraphQLGatewayOpts } from "./graphql/index.js";
 export { EnvSigner } from "./signers/EnvSigner.js";
 export { AwsKmsSigner } from "./signers/AwsKmsSigner.js";
 export { GcpKmsSigner } from "./signers/GcpKmsSigner.js";
 export { VaultSigner } from "./signers/VaultSigner.js";
 export { AzureKeyVaultSigner } from "./signers/AzureKeyVaultSigner.js";
+export { CosignRequestSchema, FeeBumpRequestSchema, PolicyRequestSchema } from "./validation.js";
 export {
-  CosignRequestSchema,
-  CosignBatchRequestSchema,
-  FeeBumpRequestSchema,
-  PolicyRequestSchema,
-} from "./validation.js";
-export { FailoverStellarClient } from "./stellar/router.js";
-export { FraudDetector } from "./security/fraud-detector.js";
-export { PrismaPolicyStore, PrismaWalletRegistry } from "./db/repositories.js";
+  createTokenBucketRateLimiter,
+  type TokenBucketRateLimiterOpts,
+  type TokenBucketRateLimiter,
+} from "./middleware/rate-limiter.js";
+export {
+  idempotencyMiddleware,
+  type IdempotencyMiddlewareOpts,
+} from "./middleware/idempotency.js";
+export {
+  rbacMiddleware,
+  requirePermission,
+  hasPermission,
+  parseRoles,
+  type Role,
+  type Permission,
+  type RbacMiddlewareOpts,
+  type AuditLogEntry,
+} from "./middleware/rbac.js";
+export {
+  createShutdownHandler,
+  registerShutdownHandlers,
+  type ShutdownHandlerOpts,
+  type ShutdownHandler,
+} from "./lifecycle.js";
