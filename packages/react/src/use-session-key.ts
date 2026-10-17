@@ -36,7 +36,7 @@ export interface SessionKeyState {
  * @param durationSeconds - Default session duration in seconds (default: 3600).
  */
 export function useSessionKey(walletId: string, durationSeconds: number = 3600): SessionKeyState {
-  const { client } = useLumen();
+  const { client, isMounted } = useLumen();
 
   const [sessionKey, setSessionKey] = useState<{ publicKey: string; expiresAt: number } | null>(
     null,
@@ -58,6 +58,17 @@ export function useSessionKey(walletId: string, durationSeconds: number = 3600):
 
   const createSession = useCallback(
     async (overrideDurationSeconds?: number): Promise<SessionKeyInfo> => {
+      // SSR guard: keypair generation relies on window.crypto, which does not
+      // exist on the server.
+      if (typeof window === "undefined" || !isMounted) {
+        const ssrError = new Error(
+          "Session key creation requires a browser environment. " +
+            "Wait for client-side hydration before calling createSession.",
+        );
+        setError(ssrError);
+        throw ssrError;
+      }
+
       setIsLoading(true);
       setError(null);
       try {
@@ -74,7 +85,7 @@ export function useSessionKey(walletId: string, durationSeconds: number = 3600):
         setIsLoading(false);
       }
     },
-    [client, durationSeconds],
+    [client, durationSeconds, isMounted],
   );
 
   const revokeSession = useCallback(() => {
@@ -84,7 +95,8 @@ export function useSessionKey(walletId: string, durationSeconds: number = 3600):
 
   return {
     sessionKey,
-    isLoading,
+    // Report a loading state until hydration completes on the client.
+    isLoading: isLoading || !isMounted,
     error,
     isExpired,
     timeRemainingSeconds,
