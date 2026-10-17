@@ -59,6 +59,54 @@ export interface UseMultiSigApprovalOptions {
   onFailed?: (reason: string) => void;
 }
 
+// ---------------------------------------------------------------------------
+// Proxy upgrade types (#224)
+// ---------------------------------------------------------------------------
+
+export type ProxyUpgradeStatus =
+  | "idle"
+  | "proposing"
+  | "proposed"
+  | "approving"
+  | "approved"
+  | "executing"
+  | "executed"
+  | "cancelled"
+  | "error";
+
+export interface ProxyUpgradeProposal {
+  /** Server-issued proposal identifier. */
+  id: string;
+  /** Address of the proxy contract being upgraded. */
+  proxyAddress: string;
+  /** Hex-encoded hash of the new contract WASM. */
+  wasmHash: string;
+  /** Number of approvals collected so far. */
+  approvals: number;
+  /** Number of approvals required before execution is allowed. */
+  threshold: number;
+  /** ISO-8601 timestamp of when the timelock expires and execution is allowed. */
+  timelockEndsAt: string;
+  /** Whether the timelock has elapsed and the proposal can be executed. */
+  executable: boolean;
+}
+
+export interface UseProxyUpgradeOptions {
+  /**
+   * How often to poll the proposal status (milliseconds).
+   * Defaults to 5 000.
+   */
+  pollInterval?: number;
+  /**
+   * Called when the upgrade has been executed on-chain.
+   */
+  onExecuted?: (proposal: ProxyUpgradeProposal) => void;
+  /**
+   * Called when the proposal is cancelled or fails.
+   */
+  onFailed?: (reason: string) => void;
+}
+
 export interface UseMultiSigApprovalResult {
   /** Current status of the co-signing session. */
   status: MultiSigSessionStatus;
@@ -84,6 +132,29 @@ export interface UseMultiSigApprovalResult {
   cancel: () => void;
   /** Resets state back to idle without cancelling a remote session. */
   reset: () => void;
+}
+
+export interface UseProxyUpgradeResult {
+  /** Current status of the proxy upgrade proposal. */
+  status: ProxyUpgradeStatus;
+  /** Active proposal details. Available after `proposeUpgrade`. */
+  proposal: ProxyUpgradeProposal | null;
+  /** Whether the timelock has elapsed and the proposal can be executed. */
+  executable: boolean;
+  /** Most recent error, if any. */
+  error: Error | null;
+  /**
+   * Proposes a new WASM hash for the given proxy contract.
+   * @param proxyAddress The proxy contract address to upgrade.
+   * @param wasmHash     Hex-encoded hash of the new contract WASM.
+   */
+  proposeUpgrade: (proxyAddress: string, wasmHash: string) => Promise<void>;
+  /** Records an approval from the current signer for the active proposal. */
+  approveUpgrade: () => Promise<void>;
+  /** Executes the upgrade once the threshold and timelock are satisfied. */
+  executeUpgrade: () => Promise<void>;
+  /** Cancels the active proposal and resets all state. */
+  cancelUpgrade: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -269,5 +340,185 @@ export function useMultiSigApproval(
     createSession,
     cancel,
     reset,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Proxy upgrade hook (#224)
+// ---------------------------------------------------------------------------
+
+export function useProxyUpgrade(
+  options: UseProxyUpgradeOptions = {}
+): UseProxyUpgradeResult {
+  const { client } = useLumen();
+  const { t } = useTranslation();
+  const { pollInterval = 5_000, onExecuted, onFailed } = options;
+
+  const [status, setStatus] = useState<ProxyUpgradeStatus>("idle");
+  const [proposal, setProposal] = useState<ProxyUpgradeProposal | null>(null);
+  const [error, setError] = useState<Error | null>(null);
+
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+    };
+  }, []);
+
+  const stopPolling = useCallback(() => {
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
+
+  /** Poll the proposal until it is executed, cancelled, or fails. */
+  const pollProposal = useCallback(
+    (proposalId: string) => {
+      const tick = async () => {
+        if (!mountedRef.current) return;
+
+        try {
+          const data = await client.get<ProxyUpgradeProposal>(
+            `/proxy/upgrade/${proposalId}`
+          );
+
+          if (!mountedRef.current) return;
+
+          setProposal(data);
+
+          if (data.executable && status === "approved") {
+            setStatus("approved");
+          }
+
+          pollTimerRef.current = setTimeout(() => {
+            void tick();
+          }, pollInterval);
+        } catch (pollErr: unknown) {
+          if (!mountedRef.current) return;
+          stopPolling();
+          const e =
+            pollErr instanceof Error ? pollErr : new Error(t.errors.network);
+          setError(e);
+          setStatus("error");
+          onFailed?.(e.message);
+        }
+      };
+
+      pollTimerRef.current = setTimeout(() => {
+        void tick();
+      }, pollInterval);
+    },
+    [client, pollInterval, stopPolling, onFailed, status, t]
+  );
+
+  const proposeUpgrade = useCallback(
+    async (proxyAddress: string, wasmHash: string): Promise<void> => {
+      stopPolling();
+      setStatus("proposing");
+      setProposal(null);
+      setError(null);
+
+      try {
+        const data = await client.post<ProxyUpgradeProposal>(
+          "/proxy/upgrade",
+          { proxyAddress, wasmHash }
+        );
+
+        if (!mountedRef.current) return;
+
+        setProposal(data);
+        setStatus("proposed");
+        pollProposal(data.id);
+      } catch (proposeErr: unknown) {
+        if (!mountedRef.current) return;
+        const e =
+          proposeErr instanceof Error
+            ? proposeErr
+            : new Error(t.errors.network);
+        setError(e);
+        setStatus("error");
+        onFailed?.(e.message);
+      }
+    },
+    [client, stopPolling, pollProposal, onFailed, t]
+  );
+
+  const approveUpgrade = useCallback(async (): Promise<void> => {
+    if (!proposal) return;
+    setStatus("approving");
+    setError(null);
+
+    try {
+      const data = await client.post<ProxyUpgradeProposal>(
+        `/proxy/upgrade/${proposal.id}/approve`,
+        {}
+      );
+
+      if (!mountedRef.current) return;
+
+      setProposal(data);
+      setStatus("approved");
+    } catch (approveErr: unknown) {
+      if (!mountedRef.current) return;
+      const e =
+        approveErr instanceof Error ? approveErr : new Error(t.errors.network);
+      setError(e);
+      setStatus("error");
+      onFailed?.(e.message);
+    }
+  }, [client, proposal, onFailed, t]);
+
+  const executeUpgrade = useCallback(async (): Promise<void> => {
+    if (!proposal) return;
+    setStatus("executing");
+    setError(null);
+
+    try {
+      const data = await client.post<ProxyUpgradeProposal>(
+        `/proxy/upgrade/${proposal.id}/execute`,
+        {}
+      );
+
+      if (!mountedRef.current) return;
+
+      stopPolling();
+      setProposal(data);
+      setStatus("executed");
+      onExecuted?.(data);
+    } catch (executeErr: unknown) {
+      if (!mountedRef.current) return;
+      const e =
+        executeErr instanceof Error
+          ? executeErr
+          : new Error(t.errors.network);
+      setError(e);
+      setStatus("error");
+      onFailed?.(e.message);
+    }
+  }, [client, proposal, stopPolling, onExecuted, onFailed, t]);
+
+  const cancelUpgrade = useCallback(() => {
+    stopPolling();
+    setStatus("cancelled");
+    setProposal(null);
+    setError(null);
+  }, [stopPolling]);
+
+  const executable = proposal?.executable ?? false;
+
+  return {
+    status,
+    proposal,
+    executable,
+    error,
+    proposeUpgrade,
+    approveUpgrade,
+    executeUpgrade,
+    cancelUpgrade,
   };
 }

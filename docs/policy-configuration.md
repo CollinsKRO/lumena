@@ -12,6 +12,7 @@ The Lumen `PolicyEngine` allows integrators to enforce rules on wallets before t
    - [GET /policy/:walletId](#get-policywalletid)
 4. [Example Configurations](#4-example-configurations)
    - [Spend Limit Policy](#spend-limit-policy)
+   - [USD Spend Limit Policy](#usd-spend-limit-policy)
    - [Velocity Check Policy](#velocity-check-policy)
    - [Allowlist Policy](#allowlist-policy)
    - [Combined Multi-Rule Policy](#combined-multi-rule-policy)
@@ -32,6 +33,7 @@ export interface Policy {
 
 export type PolicyRule =
   | SpendLimit
+  | UsdSpendLimit
   | VelocityRule
   | AllowlistRule
   | SessionKeyPolicyRule
@@ -45,6 +47,30 @@ export interface SpendLimit {
   asset: string;       // "native" (for XLM) or a specific asset code
   maxPerTx: string;    // Decimal string representing max amount per transaction
   maxDaily: string;    // Decimal string representing max cumulative amount per day
+}
+
+/**
+ * Limits spend amounts expressed in USD, using an on-chain oracle price feed
+ * (e.g. Reflector/Band/Pyth or a mock Soroban oracle) to convert asset amounts
+ * to their USD equivalent before authorizing a payment.
+ *
+ * The oracle consumer contract lives in `contracts/oracle-spend-limit/`.
+ */
+export interface UsdSpendLimit {
+  type: "usd_spend_limit";
+  asset: string;          // "native" (for XLM) or a specific asset code
+  maxPerTxUsd: string;    // Decimal string, max USD value per transaction
+  maxDailyUsd: string;    // Decimal string, max cumulative USD value per day
+  oracle: OracleConfig;   // Price feed the consumer reads from
+}
+
+/**
+ * Configuration for the oracle price feed consumed by the USD spend limit.
+ */
+export interface OracleConfig {
+  contractId: string;     // Address of the oracle contract (e.g. Reflector)
+  assetKey: string;       // Asset identifier the oracle prices (e.g. "XLM")
+  maxPriceAgeSeconds: number; // Max acceptable age of a price before it is stale
 }
 
 /**
@@ -134,6 +160,50 @@ Integrators can use the JSON schema below to validate payloads or autogenerate c
               "type": "string",
               "pattern": "^[0-9]+(?:\\.[0-9]+)?$",
               "description": "Maximum aggregate amount permitted within 24 hours (decimal string)."
+            }
+          }
+        },
+        {
+          "title": "UsdSpendLimit",
+          "type": "object",
+          "required": ["type", "asset", "maxPerTxUsd", "maxDailyUsd", "oracle"],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "usd_spend_limit"
+            },
+            "asset": {
+              "type": "string",
+              "description": "Asset identifier. Use 'native' for XLM."
+            },
+            "maxPerTxUsd": {
+              "type": "string",
+              "pattern": "^[0-9]+(?:\\.[0-9]+)?$",
+              "description": "Maximum USD value permitted in a single transaction (decimal string)."
+            },
+            "maxDailyUsd": {
+              "type": "string",
+              "pattern": "^[0-9]+(?:\\.[0-9]+)?$",
+              "description": "Maximum aggregate USD value permitted within 24 hours (decimal string)."
+            },
+            "oracle": {
+              "type": "object",
+              "required": ["contractId", "assetKey", "maxPriceAgeSeconds"],
+              "properties": {
+                "contractId": {
+                  "type": "string",
+                  "description": "Address of the oracle contract (e.g. Reflector)."
+                },
+                "assetKey": {
+                  "type": "string",
+                  "description": "Asset identifier the oracle prices (e.g. 'XLM')."
+                },
+                "maxPriceAgeSeconds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Maximum acceptable age of a price before it is treated as stale."
+                }
+              }
             }
           }
         },
@@ -280,6 +350,43 @@ Limits user transactions to a maximum of 50 XLM per transaction, and an aggregat
       "asset": "native",
       "maxPerTx": "50",
       "maxDaily": "200"
+    }
+  ]
+}
+```
+
+### USD Spend Limit Policy
+
+Limits spend by **USD value** rather than a static asset amount, so limits stay
+stable when the fiat value of XLM fluctuates. The oracle consumer contract
+(`contracts/oracle-spend-limit/`) reads the price feed, converts the payment
+amount to USD using standard precision math, and compares the result against
+`maxPerTxUsd` and `maxDailyUsd`.
+
+- `oracle.contractId` — address of the price feed contract (e.g. Reflector).
+- `oracle.assetKey` — the asset the oracle prices (e.g. `XLM`).
+- `oracle.maxPriceAgeSeconds` — a price older than this is considered **stale**.
+
+**Fail-safe behavior:** if the oracle price is stale (older than
+`maxPriceAgeSeconds`) or missing (no price published for the asset), the rule
+**fails closed** — the transaction is rejected and never co-signed. The consumer
+does not fall back to a cached or default price.
+
+#### Request Payload
+```json
+{
+  "walletId": "GD3Y2Z5XQ7Y6F3T3C7F5N5YUXW2QZQXUYQ7C5W4F5A6S7D8F9G0H1J2K",
+  "rules": [
+    {
+      "type": "usd_spend_limit",
+      "asset": "native",
+      "maxPerTxUsd": "25.00",
+      "maxDailyUsd": "100.00",
+      "oracle": {
+        "contractId": "CBX2X2Z5XQ7Y6F3T3C7F5N5YUXW2QZQXUYQ7C5W4F5A6S7D8F9G0H1J2K",
+        "assetKey": "XLM",
+        "maxPriceAgeSeconds": 300
+      }
     }
   ]
 }

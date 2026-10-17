@@ -52,6 +52,27 @@ export function toScVal(input: ScValInput, explicitType?: ScValType): xdr.ScVal 
             : Buffer.from(value);
         return xdr.ScVal.scvBytes(buf);
       }
+      case "bytes32": {
+        const buf = toBytes32Buffer(value);
+        return xdr.ScVal.scvBytes(buf);
+      }
+      case "timepoint":
+        return nativeToScVal(BigInt(value), { type: "u64" });
+      case "duration":
+        return nativeToScVal(BigInt(value), { type: "u64" });
+      case "price": {
+        const price = normalizePrice(value);
+        return xdr.ScVal.scvMap([
+          new xdr.ScMapEntry({
+            key: xdr.ScVal.scvSymbol("price"),
+            val: nativeToScVal(price.price, { type: "i128" }),
+          }),
+          new xdr.ScMapEntry({
+            key: xdr.ScVal.scvSymbol("timestamp"),
+            val: nativeToScVal(price.timestamp, { type: "u64" }),
+          }),
+        ]);
+      }
       default:
         return nativeToScVal(value);
     }
@@ -85,6 +106,58 @@ export function toScVal(input: ScValInput, explicitType?: ScValType): xdr.ScVal 
   }
 
   return nativeToScVal(value);
+}
+
+/**
+ * Normalizes a value into a 32-byte Buffer for `BytesN<32>` arguments such as
+ * contract wasm hashes (#222, #224).
+ *
+ * Accepts a hex string (with or without `0x` prefix), a Buffer, or a
+ * Uint8Array. Throws if the resulting length is not exactly 32 bytes.
+ */
+export function toBytes32Buffer(value: unknown): Buffer {
+  let buf: Buffer;
+  if (Buffer.isBuffer(value)) {
+    buf = value;
+  } else if (value instanceof Uint8Array) {
+    buf = Buffer.from(value);
+  } else if (typeof value === "string") {
+    const hex = value.startsWith("0x") || value.startsWith("0X") ? value.slice(2) : value;
+    if (!/^[0-9a-fA-F]*$/.test(hex) || hex.length % 2 !== 0) {
+      throw new Error(`Invalid BytesN<32> hex string: ${value}`);
+    }
+    buf = Buffer.from(hex, "hex");
+  } else {
+    throw new Error(`Unsupported BytesN<32> value: ${String(value)}`);
+  }
+
+  if (buf.length !== 32) {
+    throw new Error(`Expected 32 bytes for BytesN<32>, got ${buf.length}`);
+  }
+  return buf;
+}
+
+/**
+ * Normalizes an oracle price struct (#223) into `{ price: bigint, timestamp: bigint }`.
+ *
+ * Accepts either an object with `price`/`timestamp` fields or a tuple
+ * `[price, timestamp]`. The price is treated as a fixed-point i128 value.
+ */
+export function normalizePrice(value: unknown): { price: bigint; timestamp: bigint } {
+  if (Array.isArray(value)) {
+    if (value.length < 2) {
+      throw new Error("Price tuple must contain [price, timestamp]");
+    }
+    return { price: BigInt(value[0] as any), timestamp: BigInt(value[1] as any) };
+  }
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    if (obj.price === undefined || obj.timestamp === undefined) {
+      throw new Error("Price object must contain 'price' and 'timestamp' fields");
+    }
+    return { price: BigInt(obj.price as any), timestamp: BigInt(obj.timestamp as any) };
+  }
+  throw new Error(`Unsupported price value: ${String(value)}`);
 }
 
 /**
@@ -150,7 +223,66 @@ export function fromScVal(scVal: any): any {
       return scVal.i128().toBigInt();
     case xdr.ScValType.scvU128():
       return scVal.u128().toBigInt();
+    case xdr.ScValType.scvU64():
+      return scVal.u64().toBigInt();
+    case xdr.ScValType.scvI64():
+      return scVal.i64().toBigInt();
+    case xdr.ScValType.scvU32():
+      return scVal.u32();
+    case xdr.ScValType.scvI32():
+      return scVal.i32();
+    case xdr.ScValType.scvTimepoint():
+      return scVal.timepoint().toBigInt();
+    case xdr.ScValType.scvDuration():
+      return scVal.duration().toBigInt();
     default:
       return scValToNative(scVal);
   }
+}
+
+/**
+ * Decodes a `BytesN<32>` ScVal (e.g. a contract wasm hash) into a lowercase
+ * hex string. Throws if the value is not exactly 32 bytes.
+ */
+export function fromBytes32ScVal(scVal: xdr.ScVal): string {
+  if (scVal.switch() !== xdr.ScValType.scvBytes()) {
+    throw new Error("Expected scvBytes for BytesN<32>");
+  }
+  const buf = Buffer.from(scVal.bytes());
+  if (buf.length !== 32) {
+    throw new Error(`Expected 32 bytes for BytesN<32>, got ${buf.length}`);
+  }
+  return buf.toString("hex");
+}
+
+/**
+ * Decodes an oracle price struct ScVal (#223) into `{ price: bigint, timestamp: bigint }`.
+ *
+ * Accepts either an scvMap with `price`/`timestamp` symbol keys or an scvVec
+ * tuple `[price, timestamp]`.
+ */
+export function fromPriceScVal(scVal: xdr.ScVal): { price: bigint; timestamp: bigint } {
+  const decoded = fromScVal(scVal);
+  if (decoded instanceof Map) {
+    const price = decoded.get("price");
+    const timestamp = decoded.get("timestamp");
+    if (price === undefined || timestamp === undefined) {
+      throw new Error("Price map missing 'price' or 'timestamp'");
+    }
+    return { price: BigInt(price), timestamp: BigInt(timestamp) };
+  }
+  if (Array.isArray(decoded)) {
+    if (decoded.length < 2) {
+      throw new Error("Price tuple must contain [price, timestamp]");
+    }
+    return { price: BigInt(decoded[0]), timestamp: BigInt(decoded[1]) };
+  }
+  if (decoded && typeof decoded === "object") {
+    const obj = decoded as Record<string, unknown>;
+    if (obj.price === undefined || obj.timestamp === undefined) {
+      throw new Error("Price object missing 'price' or 'timestamp'");
+    }
+    return { price: BigInt(obj.price as any), timestamp: BigInt(obj.timestamp as any) };
+  }
+  throw new Error("Unsupported price ScVal");
 }

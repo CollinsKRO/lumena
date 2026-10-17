@@ -59,7 +59,22 @@ jobs:
           wasm-opt --version
 
       - name: Build contracts (wasm32 release)
-        run: cargo build --target ${{ env.WASM_TARGET }} --release
+        run: |
+          set -euo pipefail
+          cargo build --workspace --target ${{ env.WASM_TARGET }} --release \
+            -p policy-guard \
+            -p oracle-spend-limit \
+            -p proxy \
+            -p inheritance
+
+      - name: Run contract tests
+        run: |
+          set -euo pipefail
+          cargo test --workspace \
+            -p policy-guard \
+            -p oracle-spend-limit \
+            -p proxy \
+            -p inheritance
 
       - name: Optimize WASM binaries and enforce size budget
         id: optimize
@@ -72,7 +87,14 @@ jobs:
             echo "::error::No WASM binaries were produced by the build."
             exit 1
           fi
+          expected_contracts=(policy_guard oracle_spend_limit proxy inheritance)
           failed=0
+          for contract in "${expected_contracts[@]}"; do
+            if [ ! -f "target/${WASM_TARGET}/release/${contract}.wasm" ]; then
+              echo "::error::Expected WASM binary for ${contract} was not produced by the build."
+              failed=1
+            fi
+          done
           for wasm in "${wasm_files[@]}"; do
             name="$(basename "$wasm")"
             out="artifacts/wasm/${name}"
@@ -114,6 +136,13 @@ jobs:
             echo "::error::No optimized WASM binaries available for ABI export."
             exit 1
           fi
+          expected_contracts=(policy_guard oracle_spend_limit proxy inheritance)
+          for contract in "${expected_contracts[@]}"; do
+            if [ ! -f "artifacts/wasm/${contract}.wasm" ]; then
+              echo "::error::Missing optimized WASM for ${contract}; cannot generate TypeScript bindings."
+              exit 1
+            fi
+          done
           for wasm in "${wasm_files[@]}"; do
             name="$(basename "$wasm" .wasm)"
             echo "Generating TypeScript bindings for ${name}..."
