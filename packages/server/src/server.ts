@@ -35,6 +35,7 @@ import {
 
 import { SponsorMonitorService } from "./fee-sponsor/monitor.js";
 import { WebhookDispatcher } from "./webhook/dispatcher.js";
+import { createGraphQLGateway } from "./graphql/index.js";
 
 /** A single policy decision broadcast on the audit stream. */
 export interface AuditEvent {
@@ -622,6 +623,10 @@ export function createServer(opts: ServerOpts): ServerResult {
       res.json(await webhookDispatcher.getDeliveryLog());
     }),
   );
+
+  // GraphQL gateway (queries + SSE subscriptions) served alongside the REST endpoints.
+  const graphqlGateway = createGraphQLGateway({ client, policyEngine });
+  app.use(graphqlGateway.graphqlEndpoint, graphqlGateway);
 
   app.use(errorHandler);
 
