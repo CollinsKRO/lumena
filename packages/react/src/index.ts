@@ -119,6 +119,10 @@ export type {
   LumenTransactionStatus,
 } from "./components/LumenTransactionFeed.js";
 
+// #265 — Policy builder and spend limit editor
+export { LumenPolicyEditor } from "./components/LumenPolicyEditor.js";
+export type { LumenPolicyEditorProps } from "./components/LumenPolicyEditor.js";
+
 // #266 — QR scanner with camera access, flash toggle, and URI parsing
 export { LumenQrScanner } from "./components/LumenQrScanner.js";
 export type {
