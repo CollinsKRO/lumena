@@ -72,6 +72,9 @@ export type {
   LumenConnectModalTheme,
 } from "./components/LumenConnectModal.js";
 
+export { LumenSwapWidget } from "./components/LumenSwapWidget.js";
+export type { LumenSwapWidgetProps } from "./components/LumenSwapWidget.js";
+
 // #276 — Error boundary with sanitized diagnostics export
 export { LumenErrorBoundary } from "./components/LumenErrorBoundary.js";
 export type {
