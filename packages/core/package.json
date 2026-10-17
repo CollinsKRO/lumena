@@ -34,6 +34,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
+    "test:fuzz": "vitest run __tests__/fuzz",
     "test:watch": "vitest"
   },
   "dependencies": {
@@ -50,6 +51,7 @@
   "devDependencies": {
     "@stellar/stellar-sdk": "^17.0.1",
     "@vitest/coverage-v8": "^5.0.0",
+    "fast-check": "^3.23.0",
     "typescript": "^5.8.0",
     "vitest": "^5.0.0"
   }

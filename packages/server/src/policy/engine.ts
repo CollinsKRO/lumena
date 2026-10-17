@@ -86,22 +86,83 @@ export class PolicyEngine {
   }
 
   evaluate(opts: EvaluateOpts): EvaluateResult {
-    const policy = this.policies.get(opts.walletAddress);
-
-    if (!policy) {
-      return this.defaultPolicy === "allow"
-        ? { approved: true }
-        : { approved: false, reason: `No policy found for wallet ${opts.walletAddress}` };
-    }
-
-    for (const rule of policy.rules) {
-      const result = this.evaluateRule(rule, opts);
-      if (!result.approved) {
-        return result;
+    try {
+      if (!opts || typeof opts !== "object") {
+        return { approved: false, reason: "Malformed evaluation options" };
       }
-    }
 
-    return { approved: true };
+      const policy = this.policies.get(opts.walletAddress);
+
+      if (!policy) {
+        return this.defaultPolicy === "allow"
+          ? { approved: true }
+          : { approved: false, reason: `No policy found for wallet ${opts.walletAddress}` };
+      }
+
+      if (!Array.isArray(policy.rules)) {
+        return { approved: false, reason: "Policy has malformed rules" };
+      }
+
+      for (const rule of policy.rules) {
+        const result = this.evaluateRule(rule, opts);
+        if (!result.approved) {
+          return result;
+        }
+      }
+
+      return { approved: true };
+    } catch (err) {
+      return {
+        approved: false,
+        reason: `Policy evaluation failed closed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
+  private evaluateRule(rule: PolicyRule, opts: EvaluateOpts): EvaluateResult {
+    try {
+      if (!rule || typeof rule !== "object" || typeof rule.type !== "string") {
+        return { approved: false, reason: "Malformed policy rule" };
+      }
+
+      switch (rule.type) {
+        case "spend_limit":
+          return this.evaluateSpendLimit(rule as SpendLimit, opts);
+        case "velocity":
+          return this.evaluateVelocity(rule as VelocityRule, opts);
+        case "allowlist":
+          return this.evaluateAllowlist(rule as AllowlistRule, opts);
+        case "blocklist":
+          return this.evaluateBlocklist(rule as BlocklistRule, opts);
+        case "asset_allowlist":
+          return this.evaluateAssetAllowlist(rule as AssetAllowlistRule, opts);
+        case "session_key":
+          return this.evaluateSessionKey(rule as SessionKeyPolicyRule, opts);
+        case "timebounds":
+          return this.evaluateTimeBounds(rule as TimeBoundsRule, opts);
+        case "max_operations":
+          return this.evaluateMaxOperations(rule as MaxOperationsRule, opts);
+        case "fee_limit":
+          return this.evaluateFeeLimit(rule as FeeLimitRule, opts);
+        case "contract_allowlist":
+          return this.evaluateContractAllowlist(rule as ContractAllowlistRule, opts);
+        default:
+          return { approved: false, reason: `Unknown policy rule type: ${rule.type}` };
+      }
+    } catch (err) {
+      return {
+        approved: false,
+        reason: `Rule evaluation failed closed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
+  private getOperations(opts: EvaluateOpts): Operation[] {
+    const tx = opts?.transaction as unknown as { operations?: unknown } | undefined;
+    if (!tx || !Array.isArray(tx.operations)) {
+      return [];
+    }
+    return tx.operations as Operation[];
   }
 
   /**
@@ -333,16 +394,23 @@ export class PolicyEngine {
       default:
         return { approved: true };
     }
+    return parsed;
   }
 
   private evaluateSpendLimit(rule: SpendLimit, opts: EvaluateOpts): EvaluateResult {
     const { walletAddress } = opts;
     const targetAsset = this.getAssetIdentifier(rule.asset);
 
+    const maxPerTx = this.parseAmount(rule.maxPerTx);
+    const maxDaily = this.parseAmount(rule.maxDaily);
+    if (maxPerTx === null || maxDaily === null) {
+      return { approved: false, reason: "Spend limit rule has malformed limits" };
+    }
+
     let txAmount = 0;
     let matchedOps = 0;
 
-    for (const op of opts.transaction.operations) {
+    for (const op of this.getOperations(opts)) {
       // Type guard: only operations that carry an `amount` field (Payment, PathPayment, etc.)
       if (!("amount" in op) || typeof (op as { amount: unknown }).amount !== "string") {
         continue;
@@ -361,7 +429,11 @@ export class PolicyEngine {
       const opAssetId = this.getAssetIdentifier(opAsset);
 
       if (opAssetId === targetAsset) {
-        txAmount += parseFloat((typedOp as { amount: string }).amount);
+        const amount = this.parseAmount((typedOp as { amount: string }).amount);
+        if (amount === null) {
+          return { approved: false, reason: "Transaction contains a malformed amount" };
+        }
+        txAmount += amount;
         matchedOps++;
       }
     }
@@ -370,7 +442,7 @@ export class PolicyEngine {
       return { approved: true };
     }
 
-    if (txAmount > parseFloat(rule.maxPerTx)) {
+    if (txAmount > maxPerTx) {
       return {
         approved: false,
         reason: `Transaction spending ${txAmount} exceeds per-tx limit ${rule.maxPerTx}`,
@@ -389,14 +461,14 @@ export class PolicyEngine {
     }
     const track = walletTrack.get(trackKey)!;
 
-    if (txAmount > parseFloat(rule.maxPerTx)) {
+    if (txAmount > maxPerTx) {
       return {
         approved: false,
         reason: `Transaction spending ${txAmount} exceeds per-tx limit ${rule.maxPerTx}`,
       };
     }
 
-    if (track.dailyTotal + txAmount > parseFloat(rule.maxDaily)) {
+    if (track.dailyTotal + txAmount > maxDaily) {
       return {
         approved: false,
         reason: `Daily spending ${track.dailyTotal + txAmount} exceeds limit ${rule.maxDaily}`,
@@ -410,27 +482,41 @@ export class PolicyEngine {
   }
 
   private getAssetIdentifier(asset: Asset | string | undefined | null): string {
-    if (!asset) return "native";
-    if (typeof asset === "string") {
-      if (asset.toLowerCase() === "native" || asset.toUpperCase() === "XLM") {
+    try {
+      if (!asset) return "native";
+      if (typeof asset === "string") {
+        if (asset.toLowerCase() === "native" || asset.toUpperCase() === "XLM") {
+          return "native";
+        }
+        return asset;
+      }
+      if (typeof asset.isNative === "function" && asset.isNative()) {
         return "native";
       }
-      return asset;
-    }
-    if (asset.isNative()) {
+      if (asset.code && asset.issuer) {
+        return `${asset.code}:${asset.issuer}`;
+      }
+      if (asset.code) {
+        return asset.code;
+      }
       return "native";
+    } catch {
+      // Malformed asset objects must not throw; treat as an opaque identifier
+      // so that allowlist checks fail closed rather than bypassing.
+      return "__malformed_asset__";
     }
-    if (asset.code && asset.issuer) {
-      return `${asset.code}:${asset.issuer}`;
-    }
-    if (asset.code) {
-      return asset.code;
-    }
-    return "native";
   }
 
   private evaluateVelocity(rule: VelocityRule, opts: EvaluateOpts): EvaluateResult {
     const { walletAddress } = opts;
+
+    if (
+      !Number.isFinite(rule.windowMinutes) ||
+      !Number.isFinite(rule.maxTransactions) ||
+      rule.windowMinutes < 0
+    ) {
+      return { approved: false, reason: "Velocity rule has malformed parameters" };
+    }
 
     // Initialize tracking for this wallet if needed
     if (!this.velocityTracking.has(walletAddress)) {
@@ -461,7 +547,11 @@ export class PolicyEngine {
   }
 
   private evaluateAllowlist(rule: AllowlistRule, opts: EvaluateOpts): EvaluateResult {
-    for (const op of opts.transaction.operations) {
+    if (!Array.isArray(rule.destinations)) {
+      return { approved: false, reason: "Allowlist rule has malformed destinations" };
+    }
+
+    for (const op of this.getOperations(opts)) {
       if ("destination" in op && op.destination) {
         const destination = op.destination.toString();
         if (!rule.destinations.includes(destination)) {
@@ -477,7 +567,11 @@ export class PolicyEngine {
   }
 
   private evaluateBlocklist(rule: BlocklistRule, opts: EvaluateOpts): EvaluateResult {
-    for (const op of opts.transaction.operations) {
+    if (!Array.isArray(rule.destinations)) {
+      return { approved: false, reason: "Blocklist rule has malformed destinations" };
+    }
+
+    for (const op of this.getOperations(opts)) {
       if ("destination" in op && op.destination) {
         const destination = op.destination.toString();
         if (rule.destinations.includes(destination)) {
@@ -493,7 +587,11 @@ export class PolicyEngine {
   }
 
   private evaluateAssetAllowlist(rule: AssetAllowlistRule, opts: EvaluateOpts): EvaluateResult {
-    for (const op of opts.transaction.operations) {
+    if (!Array.isArray(rule.assets)) {
+      return { approved: false, reason: "Asset allowlist rule has malformed assets" };
+    }
+
+    for (const op of this.getOperations(opts)) {
       let assets: Array<Asset | undefined> = [];
       if (op.type === "payment") {
         assets = [(op as Operation.Payment).asset];
@@ -521,19 +619,35 @@ export class PolicyEngine {
 
   private evaluateSessionKey(rule: SessionKeyPolicyRule, opts: EvaluateOpts): EvaluateResult {
     const now = Date.now();
+
+    if (!Number.isFinite(rule.expiresAt)) {
+      return { approved: false, reason: "Session key rule has malformed expiry" };
+    }
+
     const expiryMs = rule.expiresAt < 1e11 ? rule.expiresAt * 1000 : rule.expiresAt;
 
     if (now > expiryMs) {
       return { approved: false, reason: `Session key ${rule.sessionPublicKey} has expired` };
     }
 
-    const paymentOp = opts.transaction.operations.find(
+    const paymentOp = this.getOperations(opts).find(
       (op): op is Operation.Payment => "amount" in op && "destination" in op,
     ) as Operation.Payment | undefined;
 
-    const txAmount = paymentOp ? parseFloat(paymentOp.amount) : 0;
+    let txAmount = 0;
+    if (paymentOp) {
+      const parsed = this.parseAmount(paymentOp.amount);
+      if (parsed === null) {
+        return { approved: false, reason: "Session key transaction has a malformed amount" };
+      }
+      txAmount = parsed;
+    }
+
     const currentSpend = this.sessionSpendTracking.get(rule.sessionPublicKey) ?? 0;
-    const maxSpend = parseFloat(rule.maxSpend);
+    const maxSpend = this.parseAmount(rule.maxSpend);
+    if (maxSpend === null) {
+      return { approved: false, reason: "Session key rule has malformed spend cap" };
+    }
 
     if (currentSpend + txAmount > maxSpend) {
       return {
@@ -547,6 +661,10 @@ export class PolicyEngine {
   }
 
   private evaluateTimeBounds(rule: TimeBoundsRule, opts: EvaluateOpts): EvaluateResult {
+    if (!opts?.transaction) {
+      return { approved: false, reason: "Time bounds rule received a malformed transaction" };
+    }
+
     const result = validateTimeBounds(opts.transaction, {
       maxWindowSeconds: rule.maxWindowSeconds,
       allowUnbounded: rule.allowUnbounded ?? false,
@@ -563,11 +681,15 @@ export class PolicyEngine {
     rule: MaxOperationsRule,
     optsOrTx: EvaluateOpts | Transaction | { operations: unknown[] },
   ): EvaluateResult {
+    if (!Number.isFinite(rule.maxOperations) || rule.maxOperations < 0) {
+      return { approved: false, reason: "Max operations rule has malformed limit" };
+    }
+
     const tx =
       "transaction" in optsOrTx
         ? (optsOrTx as EvaluateOpts).transaction
         : (optsOrTx as { operations: unknown[] });
-    const opCount = tx?.operations?.length ?? 0;
+    const opCount = Array.isArray(tx?.operations) ? tx.operations.length : 0;
     if (opCount > rule.maxOperations) {
       return {
         approved: false,
@@ -579,7 +701,16 @@ export class PolicyEngine {
   }
 
   private evaluateFeeLimit(rule: FeeLimitRule, opts: EvaluateOpts): EvaluateResult {
-    const fee = parseInt((opts.transaction as unknown as { fee: string }).fee, 10);
+    if (!Number.isFinite(rule.maxFeeStroops)) {
+      return { approved: false, reason: "Fee limit rule has malformed limit" };
+    }
+
+    const rawFee = (opts?.transaction as unknown as { fee?: unknown } | undefined)?.fee;
+    const fee = typeof rawFee === "number" ? rawFee : parseInt(String(rawFee), 10);
+    if (!Number.isFinite(fee)) {
+      return { approved: false, reason: "Transaction has a malformed fee" };
+    }
+
     if (fee > rule.maxFeeStroops) {
       return {
         approved: false,

@@ -7,6 +7,7 @@ import {
   type RequestListener,
   type IncomingMessage,
 } from "node:http";
+import { WebSocketServer, type WebSocket } from "ws";
 import { Keypair, StrKey } from "@stellar/stellar-sdk";
 import { StellarClient } from "@lumen/core";
 import type { Signer } from "@lumen/types";
@@ -35,6 +36,22 @@ import {
 import { SponsorMonitorService } from "./fee-sponsor/monitor.js";
 import { WebhookDispatcher } from "./webhook/dispatcher.js";
 
+/** A single policy decision broadcast on the audit stream. */
+export interface AuditEvent {
+  /** ISO timestamp of when the decision was made. */
+  timestamp: string;
+  /** Whether the transaction was approved or rejected by policy. */
+  decision: "approved" | "rejected";
+  /** Wallet address the decision applies to, when known. */
+  wallet?: string;
+  /** Transaction hash, when known. */
+  txHash?: string;
+  /** Fee (in stroops) associated with the transaction, when known. */
+  fee?: string;
+  /** Human-readable reason for the decision (typically on rejections). */
+  reason?: string;
+}
+
 export interface ServerResult {
   /** Configured Express application. */
   app: Express;
@@ -47,6 +64,10 @@ export interface ServerResult {
   sponsorMonitorService: SponsorMonitorService;
   policyEngine: PolicyEngine;
   webhookDispatcher: WebhookDispatcher;
+  /** WebSocket server backing the real-time audit stream. */
+  auditWebSocketServer: WebSocketServer;
+  /** Broadcasts a policy decision to all connected audit stream clients. */
+  broadcastAuditEvent: (event: AuditEvent) => void;
 }
 
 export interface ServerOpts {
@@ -106,6 +127,12 @@ export interface ServerOpts {
    * GET /wallets lists all registered wallets.
    */
   walletRegistry?: WalletRegistry;
+  /**
+   * Optional readiness probe for downstream dependencies (Redis, PostgreSQL, ...).
+   * Used by the /health endpoint so container healthchecks can verify the
+   * server is healthy within 30 seconds.
+   */
+  readinessCheck?: () => Promise<Record<string, boolean>>;
 }
 
 /** Creates the Lumen API server, service graph, and policy engine. */
@@ -220,9 +247,23 @@ export function createServer(opts: ServerOpts): ServerResult {
         horizonConnected = false;
       }
 
-      res.json({
-        status: "ok",
+      let dependencies: Record<string, boolean> = {};
+      if (opts.readinessCheck) {
+        try {
+          dependencies = await opts.readinessCheck();
+        } catch (error) {
+          logger.error({ error }, "Readiness check failed");
+          dependencies = { readiness: false };
+        }
+      }
+
+      const dependenciesHealthy = Object.values(dependencies).every(Boolean);
+      const healthy = horizonConnected && dependenciesHealthy;
+
+      res.status(healthy ? 200 : 503).json({
+        status: healthy ? "ok" : "degraded",
         horizonConnected,
+        dependencies,
         network: client.config.network,
         version: "0.1.0",
       });
@@ -261,10 +302,22 @@ export function createServer(opts: ServerOpts): ServerResult {
 
         if (!result.approved) {
           cosignRequestsTotal.inc({ status: "rejected" });
+          broadcastAuditEvent({
+            timestamp: new Date().toISOString(),
+            decision: "rejected",
+            wallet: parsed.data.walletId,
+            txHash: parsed.data.xdr ? undefined : undefined,
+            reason: result.reason ?? "Transaction denied by policy",
+          });
           throw new PolicyError(result.reason ?? "Transaction denied by policy");
         }
 
         cosignRequestsTotal.inc({ status: "approved" });
+        broadcastAuditEvent({
+          timestamp: new Date().toISOString(),
+          decision: "approved",
+          wallet: parsed.data.walletId,
+        });
         res.json({ signedXdr: result.signedXdr });
       } catch (err) {
         if (!(err instanceof ValidationError) && !(err instanceof PolicyError)) {
@@ -574,6 +627,40 @@ export function createServer(opts: ServerOpts): ServerResult {
 
   const server = createHttpServer(app as unknown as RequestListener);
 
+  // Real-time audit stream consumed by `lumen audit --follow`.
+  const auditWebSocketServer = new WebSocketServer({ noServer: true });
+  const auditClients = new Set<WebSocket>();
+
+  const broadcastAuditEvent = (event: AuditEvent): void => {
+    const payload = JSON.stringify(event);
+    for (const socket of auditClients) {
+      if (socket.readyState === socket.OPEN) {
+        socket.send(payload);
+      }
+    }
+  };
+
+  auditWebSocketServer.on("connection", (socket: WebSocket) => {
+    auditClients.add(socket);
+    socket.on("close", () => {
+      auditClients.delete(socket);
+    });
+    socket.on("error", () => {
+      auditClients.delete(socket);
+    });
+  });
+
+  server.on("upgrade", (req, socket, head) => {
+    const pathname = (req.url ?? "").split("?")[0];
+    if (pathname !== "/audit/stream") {
+      socket.destroy();
+      return;
+    }
+    auditWebSocketServer.handleUpgrade(req, socket, head, (ws) => {
+      auditWebSocketServer.emit("connection", ws, req);
+    });
+  });
+
   server.listen(port, () => {
     logger.info({ port, network: client.config.network }, `Lumen server listening on port ${port}`);
     logger.info(
@@ -585,6 +672,11 @@ export function createServer(opts: ServerOpts): ServerResult {
   const gracefulShutdown = (signal: string) => {
     logger.info({ signal }, `${signal} received, shutting down gracefully`);
     sponsorMonitorService.stop();
+
+    for (const socket of auditClients) {
+      socket.close();
+    }
+    auditWebSocketServer.close();
 
     server.close(() => {
       logger.info("HTTP server closed");
@@ -620,5 +712,7 @@ export function createServer(opts: ServerOpts): ServerResult {
     sponsorMonitorService,
     policyEngine,
     webhookDispatcher,
+    auditWebSocketServer,
+    broadcastAuditEvent,
   };
 }
