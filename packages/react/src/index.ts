@@ -42,6 +42,16 @@ export type {
   UseInvokeContractResult,
 } from "./use-invoke-contract.js";
 
+export { useSorobanContract } from "./use-soroban-contract.js";
+export type {
+  SorobanContractMethod,
+  SorobanContractSpec,
+  SorobanContractSpecDefinition,
+  SorobanSimulation,
+  UseSorobanContractOptions,
+  UseSorobanContractResult,
+} from "./use-soroban-contract.js";
+
 export { useTrustline } from "./use-trustline.js";
 export type { UseTrustlineResult } from "./use-trustline.js";
 
