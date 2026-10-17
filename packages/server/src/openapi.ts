@@ -85,6 +85,94 @@ export const openApiSpec = {
         },
       },
     },
+    "/cosign/batch": {
+      post: {
+        summary: "Batch Cosign Transactions",
+        description:
+          "Validates and co-signs multiple transactions in a single request. Policies are evaluated atomically across all items; the response reports per-item results, including item-level policy failures.",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  transactions: {
+                    type: "array",
+                    description: "Transactions to evaluate and co-sign.",
+                    minItems: 1,
+                    items: {
+                      type: "object",
+                      properties: {
+                        xdr: {
+                          type: "string",
+                          description: "Base64 encoded Stellar transaction envelope XDR.",
+                          example: "AAAAAG...",
+                        },
+                        walletAddress: {
+                          type: "string",
+                          description: "Stellar public key address of the originating wallet.",
+                          example: "GAD7654...",
+                        },
+                      },
+                      required: ["xdr", "walletAddress"],
+                    },
+                  },
+                },
+                required: ["transactions"],
+              },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "Batch processed; per-item results returned",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    results: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        properties: {
+                          index: {
+                            type: "integer",
+                            description: "Position of the item in the request array.",
+                            example: 0,
+                          },
+                          signedXdr: {
+                            type: "string",
+                            description: "Co-signed XDR, present when approved.",
+                            example: "AAAAAG...",
+                          },
+                          approved: { type: "boolean", example: true },
+                          reason: {
+                            type: "string",
+                            description: "Human-readable explanation when not approved.",
+                            example: "Transaction denied by policy rules",
+                          },
+                          code: {
+                            type: "string",
+                            description: "Machine-readable error code when not approved.",
+                            example: "POLICY_DENIED",
+                          },
+                        },
+                        required: ["index", "approved"],
+                      },
+                    },
+                  },
+                  required: ["results"],
+                },
+              },
+            },
+          },
+          "400": { description: "Invalid request validation error" },
+          "403": { description: "Batch denied by policy or fraud rules" },
+        },
+      },
+    },
     "/fee-bump": {
       post: {
         summary: "Wrap Fee-Bump Transaction",

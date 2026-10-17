@@ -15,6 +15,8 @@ import type { Redis } from "ioredis";
 import { CosignerService } from "./cosigner/service.js";
 import { FeeSponsorService } from "./fee-sponsor/service.js";
 import { PolicyEngine } from "./policy/engine.js";
+import { FailoverStellarClient, type StellarEndpoint } from "./stellar/router.js";
+import { FraudDetector, type FraudDetectorConfig } from "./security/fraud-detector.js";
 import {
   createTokenBucketLimiter,
   type TokenBucketConfig,
@@ -23,6 +25,7 @@ import { createIdempotencyMiddleware } from "./middleware/idempotency.js";
 import { createRbacMiddleware, type RbacConfig } from "./middleware/rbac.js";
 import {
   CosignRequestSchema,
+  CosignBatchRequestSchema,
   FeeBumpRequestSchema,
   PolicyRequestSchema,
   WebhookRequestSchema,
@@ -66,6 +69,10 @@ export interface ServerResult {
   server: HttpServer;
   /** Stellar/Horizon/RPC client used by server services. */
   client: StellarClient;
+  /** Latency-aware failover router, when multiple endpoints are configured. */
+  stellarRouter?: FailoverStellarClient;
+  /** Real-time anomaly/fraud detector used by the co-signer service. */
+  fraudDetector: FraudDetector;
   cosignerService: CosignerService;
   feeSponsorService: FeeSponsorService;
   sponsorMonitorService: SponsorMonitorService;
@@ -89,6 +96,24 @@ export interface ServerOpts {
   network?: "testnet" | "mainnet" | "local";
   horizonUrl?: string;
   rpcUrl?: string;
+  /**
+   * Pool of Horizon and Soroban RPC endpoints used by the latency-aware
+   * failover router. When more than one endpoint is provided, a
+   * FailoverStellarClient is instantiated and used for routing.
+   */
+  stellarEndpoints?: StellarEndpoint[];
+  /**
+   * Interval (ms) between background health/latency pings of the router.
+   */
+  stellarHealthCheckIntervalMs?: number;
+  /**
+   * Optional fraud detector configuration (velocity/geo-IP thresholds).
+   */
+  fraudDetectorConfig?: FraudDetectorConfig;
+  /**
+   * Optional pre-built fraud detector instance.
+   */
+  fraudDetector?: FraudDetector;
   /**
    * Signer used by the co-signer service.
    * Dev/testnet → EnvSigner.  Production → AwsKmsSigner or equivalent.
@@ -181,6 +206,20 @@ export function createServer(opts: ServerOpts): ServerResult {
     rpcUrl: opts.rpcUrl,
   });
 
+  // #240 — latency-aware failover router across multiple Horizon/RPC endpoints.
+  let stellarRouter: FailoverStellarClient | undefined;
+  if (opts.stellarEndpoints && opts.stellarEndpoints.length > 1) {
+    stellarRouter = new FailoverStellarClient({
+      endpoints: opts.stellarEndpoints,
+      healthCheckIntervalMs: opts.stellarHealthCheckIntervalMs,
+    });
+    stellarRouter.start();
+  }
+
+  // #241 — real-time anomaly/fraud detection.
+  const fraudDetector =
+    opts.fraudDetector ?? new FraudDetector(opts.fraudDetectorConfig ?? {});
+
   const policyEngine = opts.policyEngine ?? new PolicyEngine();
   const webhookDispatcher = opts.webhookDispatcher ?? new WebhookDispatcher();
 
@@ -189,6 +228,7 @@ export function createServer(opts: ServerOpts): ServerResult {
     signer: opts.cosignerSigner,
     policyEngine,
     webhookDispatcher,
+    fraudDetector,
   });
 
   const feeSponsorService = new FeeSponsorService({
@@ -388,6 +428,33 @@ export function createServer(opts: ServerOpts): ServerResult {
       } finally {
         timer();
       }
+    }),
+  );
+
+  // #243 — batch co-signing with atomic policy evaluation.
+  app.post(
+    "/cosign/batch",
+    cosignFeeBumpLimiter,
+    wrapHandler(async (req: Request, res: Response) => {
+      const parsed = CosignBatchRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new ValidationError("Validation failed", parsed.error.flatten().fieldErrors);
+      }
+
+      const results = await cosignerService.cosignBatch(parsed.data.transactions);
+
+      const allApproved = results.every((r) => r.approved);
+      if (allApproved) {
+        cosignRequestsTotal.inc({ status: "approved" }, results.length);
+      } else {
+        const approvedCount = results.filter((r) => r.approved).length;
+        if (approvedCount > 0) {
+          cosignRequestsTotal.inc({ status: "approved" }, approvedCount);
+        }
+        cosignRequestsTotal.inc({ status: "rejected" }, results.length - approvedCount);
+      }
+
+      res.status(allApproved ? 200 : 207).json({ results });
     }),
   );
 
@@ -754,6 +821,7 @@ export function createServer(opts: ServerOpts): ServerResult {
    */
   const shutdown = (gracePeriodMs: number = opts.shutdownGracePeriodMs ?? 15000): Promise<void> => {
     sponsorMonitorService.stop();
+    stellarRouter?.stop();
 
     for (const socket of auditClients) {
       socket.close();
@@ -799,6 +867,8 @@ export function createServer(opts: ServerOpts): ServerResult {
     app,
     server,
     client,
+    stellarRouter,
+    fraudDetector,
     cosignerService,
     feeSponsorService,
     sponsorMonitorService,

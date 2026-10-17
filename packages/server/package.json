@@ -16,12 +16,16 @@
     "test:load": "k6 run __tests__/load/main.js",
     "test:load:cosign": "k6 run __tests__/load/cosign.js",
     "test:load:fee-bump": "k6 run __tests__/load/fee-bump.js",
-    "test:load:health": "k6 run __tests__/load/health.js"
+    "test:load:health": "k6 run __tests__/load/health.js",
+    "migrate": "prisma migrate deploy",
+    "migrate:dev": "prisma migrate dev",
+    "prisma:generate": "prisma generate"
   },
   "dependencies": {
     "@aws-sdk/client-kms": "^3.1133.0",
     "@lumen/core": "workspace:*",
     "@lumen/types": "workspace:*",
+    "@prisma/client": "^6.2.1",
     "@stellar/stellar-sdk": "^17.0.1",
     "cors": "2.8.5",
     "express": "^5.1.0",
@@ -43,6 +47,7 @@
     "@types/swagger-ui-express": "^4.1.8",
     "@vitest/coverage-v8": "^5.0.0",
     "fast-check": "^3.23.1",
+    "prisma": "^6.2.1",
     "typescript": "^5.8.0",
     "vitest": "^5.0.0"
   },

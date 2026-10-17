@@ -15,11 +15,20 @@ export class ValidationError extends Error {
 
 export class PolicyError extends Error {
   statusCode: number;
+  code?: string;
 
-  constructor(message: string, statusCode = 403) {
+  constructor(message: string, statusCode = 403, code?: string) {
     super(message);
     this.name = "PolicyError";
     this.statusCode = statusCode;
+    this.code = code;
+  }
+}
+
+export class FraudError extends PolicyError {
+  constructor(message: string, code = "FRAUD_DETECTED", statusCode = 403) {
+    super(message, statusCode, code);
+    this.name = "FraudError";
   }
 }
 
@@ -56,6 +65,7 @@ export const errorHandler = (
   if (err instanceof PolicyError) {
     return res.status(err.statusCode).json({
       error: err.message,
+      ...(err.code ? { code: err.code } : {}),
     });
   }
 

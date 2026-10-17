@@ -29,3 +29,24 @@ export const policyEvaluationDurationSeconds = new client.Histogram({
   buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5],
   registers: [register],
 });
+
+export const stellarEndpointRequestsTotal = new client.Counter({
+  name: "lumen_stellar_endpoint_requests_total",
+  help: "Total number of requests routed to each Stellar endpoint by outcome",
+  labelNames: ["endpoint", "status"],
+  registers: [register],
+});
+
+export const stellarEndpointLatencyMs = new client.Gauge({
+  name: "lumen_stellar_endpoint_latency_ms",
+  help: "Last measured latency of each Stellar endpoint in milliseconds",
+  labelNames: ["endpoint"],
+  registers: [register],
+});
+
+export const stellarEndpointHealthy = new client.Gauge({
+  name: "lumen_stellar_endpoint_healthy",
+  help: "Health status of each Stellar endpoint (1 = healthy, 0 = unhealthy)",
+  labelNames: ["endpoint"],
+  registers: [register],
+});
