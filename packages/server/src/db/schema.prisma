@@ -1,0 +1,110 @@
+// Prisma schema for Lumen relational persistence layer.
+// Target: packages/server/src/db/schema.prisma
+//
+// Provides ACID-compliant storage for wallets, policies, policy rules,
+// transaction audit trails, and webhook subscriptions.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// A wallet registered with the Lumen policy engine.
+model Wallet {
+  id        String   @id @default(uuid())
+  address   String   @unique
+  label     String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  policies          Policy[]
+  transactionAudits TransactionAudit[]
+  webhookSubscriptions WebhookSubscription[]
+
+  @@index([address])
+  @@index([createdAt])
+  @@map("wallets")
+}
+
+/// A policy attached to a wallet. Each wallet has at most one active policy
+/// per `walletId` (enforced by the unique constraint).
+model Policy {
+  id          String   @id @default(uuid())
+  walletId    String   @unique
+  name        String
+  description String?
+  enabled     Boolean  @default(true)
+  version     Int      @default(1)
+  metadata    Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  wallet Wallet       @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  rules  PolicyRule[]
+
+  @@index([walletId])
+  @@index([enabled])
+  @@map("policies")
+}
+
+/// An individual rule belonging to a policy.
+model PolicyRule {
+  id        String   @id @default(uuid())
+  policyId  String
+  ruleType  String
+  priority  Int      @default(0)
+  enabled   Boolean  @default(true)
+  config    Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  policy Policy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+
+  @@index([policyId])
+  @@index([policyId, priority])
+  @@map("policy_rules")
+}
+
+/// Immutable audit record for a transaction evaluated by the policy engine.
+model TransactionAudit {
+  id            String   @id @default(uuid())
+  walletId      String
+  transactionId String?
+  decision      String
+  reason        String?
+  amount        String?
+  asset         String?
+  payload       Json?
+  createdAt     DateTime @default(now())
+
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  @@index([walletId])
+  @@index([walletId, createdAt])
+  @@index([transactionId])
+  @@index([decision])
+  @@map("transaction_audits")
+}
+
+/// A webhook subscription for receiving policy/audit events.
+model WebhookSubscription {
+  id        String   @id @default(uuid())
+  walletId  String?
+  url       String
+  secret    String?
+  events    String[]
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  wallet Wallet? @relation(fields: [walletId], references: [id], onDelete: SetNull)
+
+  @@index([walletId])
+  @@index([enabled])
+  @@map("webhook_subscriptions")
+}

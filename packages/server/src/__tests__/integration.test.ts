@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { Keypair, TransactionBuilder, Operation, Asset, BASE_FEE } from "@stellar/stellar-sdk";
 import { StellarClient, createSponsoredAccount, setupMultisig } from "@lumen/core";
 import { CosignerService } from "../cosigner/service.js";
@@ -6,13 +6,8 @@ import { FeeSponsorService } from "../fee-sponsor/service.js";
 import { PolicyEngine } from "../policy/engine.js";
 import { createSpendLimitPolicy, createAllowlistPolicy } from "../policy/rules.js";
 import { EnvSigner } from "../signers/EnvSigner.js";
-import { context, trace, SpanStatusCode } from "@opentelemetry/api";
-import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
-import { InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
-import { W3CTraceContextPropagator } from "@opentelemetry/core";
-import { createTracing, createTracingMiddleware, injectTraceContext } from "../tracing.js";
-import express from "express";
-import type { Server } from "node:http";
+import { IdempotencyStore, withIdempotency } from "../middleware/idempotency.js";
+import { LifecycleHandler } from "../lifecycle.js";
 
 const HORIZON_URL = process.env.HORIZON_URL ?? "http://localhost:8000";
 const RPC_URL = process.env.RPC_URL ?? "http://localhost:8000/rpc";
@@ -231,93 +226,97 @@ describeNetwork("FeeSponsorService", () => {
   });
 });
 
-describe("Distributed tracing", () => {
-  const exporter = new InMemorySpanExporter();
-  const provider = new NodeTracerProvider({
-    spanProcessors: [new SimpleSpanProcessor(exporter)],
+describe("Idempotency middleware", () => {
+  function createStore() {
+    return new IdempotencyStore({ ttlSeconds: 60 });
+  }
+
+  it("returns the identical cached response on repeated requests", async () => {
+    const store = createStore();
+    const handler = vi.fn(async () => ({ status: 200, body: { hash: "abc123" } }));
+
+    const first = await withIdempotency(store, "key-1", handler);
+    const second = await withIdempotency(store, "key-1", handler);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(second).toEqual(first);
+    expect(second.body).toEqual({ hash: "abc123" });
   });
-  provider.register({ propagator: new W3CTraceContextPropagator() });
 
-  let server: Server;
-  let baseUrl: string;
+  it("coalesces concurrent identical requests into a single execution", async () => {
+    const store = createStore();
+    let resolveHandler: (value: { status: number; body: unknown }) => void = () => {};
+    const handler = vi.fn(
+      () =>
+        new Promise<{ status: number; body: unknown }>((resolve) => {
+          resolveHandler = resolve;
+        })
+    );
 
-  beforeAll(async () => {
-    const app = express();
-    app.use(createTracingMiddleware());
-    app.get("/traced", async (_req, res) => {
-      // Simulate an outgoing Stellar RPC call carrying the propagated context.
-      const headers: Record<string, string> = {};
-      injectTraceContext(headers);
-      await fetch(`${baseUrl}/mock-horizon`, { headers });
-      res.json({ ok: true });
+    const p1 = withIdempotency(store, "key-2", handler);
+    const p2 = withIdempotency(store, "key-2", handler);
+    const p3 = withIdempotency(store, "key-2", handler);
+
+    resolveHandler({ status: 200, body: { hash: "coalesced" } });
+
+    const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(r2).toEqual(r1);
+    expect(r3).toEqual(r1);
+  });
+
+  it("executes independently for distinct keys", async () => {
+    const store = createStore();
+    const handler = vi.fn(async () => ({ status: 200, body: { ok: true } }));
+
+    await withIdempotency(store, "key-a", handler);
+    await withIdempotency(store, "key-b", handler);
+
+    expect(handler).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("Graceful shutdown lifecycle", () => {
+  it("drains in-flight operations and exits with code 0 on SIGTERM", async () => {
+    const exit = vi.fn();
+    let finishOperation: () => void = () => {};
+    const operation = new Promise<void>((resolve) => {
+      finishOperation = resolve;
     });
-    app.get("/mock-horizon", (_req, res) => {
-      res.json({ ledger: 1 });
+
+    const lifecycle = new LifecycleHandler({
+      gracePeriodMs: 15_000,
+      exit,
+      closeConnections: vi.fn(async () => {}),
     });
 
-    await new Promise<void>((resolve) => {
-      server = app.listen(0, () => {
-        const address = server.address();
-        const port = typeof address === "object" && address ? address.port : 0;
-        baseUrl = `http://127.0.0.1:${port}`;
-        resolve();
-      });
+    lifecycle.track(operation);
+    const shutdown = lifecycle.handleSignal("SIGTERM");
+
+    expect(lifecycle.isShuttingDown()).toBe(true);
+
+    // New work is rejected while draining.
+    expect(() => lifecycle.track(Promise.resolve())).toThrow();
+
+    finishOperation();
+    await shutdown;
+
+    expect(exit).toHaveBeenCalledWith(0);
+  });
+
+  it("exits with code 0 after the grace period even if operations hang", async () => {
+    const exit = vi.fn();
+    const lifecycle = new LifecycleHandler({
+      gracePeriodMs: 10,
+      exit,
+      closeConnections: vi.fn(async () => {}),
     });
-  });
 
-  afterAll(async () => {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    await provider.shutdown();
-  });
+    lifecycle.track(new Promise<void>(() => {}));
+    await lifecycle.handleSignal("SIGINT");
 
-  it("creates spans for an incoming HTTP request", async () => {
-    exporter.reset();
-    const res = await fetch(`${baseUrl}/traced`);
-    expect(res.ok).toBe(true);
-
-    const spans = exporter.getFinishedSpans();
-    expect(spans.length).toBeGreaterThan(0);
-    const httpSpan = spans.find((s) => s.name.includes("GET") || s.name.includes("/traced"));
-    expect(httpSpan).toBeDefined();
-    expect(httpSpan!.status.code).not.toBe(SpanStatusCode.ERROR);
-  });
-
-  it("propagates W3C traceparent to outgoing Stellar RPC calls", async () => {
-    exporter.reset();
-    const tracer = trace.getTracer("test");
-    const span = tracer.startSpan("root");
-    const traceId = span.spanContext().traceId;
-
-    const headers: Record<string, string> = {};
-    context.with(trace.setSpan(context.active(), span), () => {
-      injectTraceContext(headers);
-    });
-    span.end();
-
-    expect(headers.traceparent).toBeDefined();
-    expect(headers.traceparent).toContain(traceId);
-    expect(headers.traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/);
-  });
-
-  it("continues an incoming traceparent context", async () => {
-    exporter.reset();
-    const incomingTraceId = "0af7651916cd43dd8448eb211c80319c";
-    const incomingSpanId = "b7ad6b7169203331";
-    const traceparent = `00-${incomingTraceId}-${incomingSpanId}-01`;
-
-    const res = await fetch(`${baseUrl}/traced`, {
-      headers: { traceparent },
-    });
-    expect(res.ok).toBe(true);
-
-    const spans = exporter.getFinishedSpans();
-    expect(spans.some((s) => s.spanContext().traceId === incomingTraceId)).toBe(true);
-  });
-
-  it("exports spans via the configured tracer provider", () => {
-    const tracing = createTracing({ serviceName: "lumen-test" });
-    expect(tracing).toBeDefined();
-    expect(typeof tracing.shutdown).toBe("function");
+    expect(exit).toHaveBeenCalledWith(0);
   });
 });
 

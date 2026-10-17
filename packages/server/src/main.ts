@@ -8,6 +8,8 @@ const { createServer } = await import("./server.js");
 const { EnvSigner, AwsKmsSigner } = await import("./signers/index.js");
 const { logger } = await import("./logger.js");
 import type { Signer } from "@lumen/types";
+import { logger } from "./logger.js";
+import { registerShutdownHandlers } from "./lifecycle.js";
 
 /**
  * SIGNER_PROVIDER controls how private keys are accessed:
@@ -63,11 +65,17 @@ async function buildSigners(): Promise<{ cosigner: Signer; feePayer: Signer }> {
 
 const { cosigner, feePayer } = await buildSigners();
 
-createServer({
+const serverResult = createServer({
   port: parseInt(process.env.PORT ?? "3000"),
   network: (process.env.STELLAR_NETWORK as any) ?? "testnet",
   horizonUrl: process.env.HORIZON_URL,
   rpcUrl: process.env.SOROBAN_RPC_URL,
+  horizonUrls,
+  rpcUrls,
+  fraudMaxRiskScore,
+  fraudVelocityMultiplier,
+  policyStore,
+  walletRegistry: policyStore,
   cosignerSigner: cosigner,
   feePayerSigner: feePayer,
   apiKey: process.env.API_KEY,
@@ -75,4 +83,14 @@ createServer({
     ? parseInt(process.env.RATE_LIMIT_WINDOW_MS)
     : undefined,
   max: process.env.RATE_LIMIT_MAX ? parseInt(process.env.RATE_LIMIT_MAX) : undefined,
+});
+
+// Install SIGINT/SIGTERM handlers so Kubernetes pod rollouts drain in-flight
+// co-sign and submit operations before the process exits cleanly (code 0).
+registerShutdownHandlers({
+  server: serverResult.server,
+  redis: serverResult.redis,
+  gracePeriodMs: process.env.SHUTDOWN_GRACE_PERIOD_MS
+    ? parseInt(process.env.SHUTDOWN_GRACE_PERIOD_MS)
+    : undefined,
 });

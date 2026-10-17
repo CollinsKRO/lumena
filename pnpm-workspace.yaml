@@ -4,4 +4,6 @@ packages:
   - "docs"
   - "contracts/*"
 allowBuilds:
-  esbuild: set this to true or false
+  '@scarf/scarf': false
+  esbuild: true
+  sharp: true

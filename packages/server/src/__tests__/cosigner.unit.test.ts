@@ -339,3 +339,165 @@ describe("CosignerService Security Validations", () => {
     expect(result.signedXdr).toBeTruthy();
   });
 });
+
+describe("CosignerService Batch Cosigning", () => {
+  const cosignerKeypair = Keypair.random();
+  const signer = new EnvSigner(cosignerKeypair.secret());
+  const client = new StellarClient({ network: "local" });
+  const userKeypair = Keypair.random();
+  const dummyAccount = new Account(userKeypair.publicKey(), "100");
+
+  const buildSignedTx = (amount = "10") => {
+    const tx = new TransactionBuilder(dummyAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: Networks.STANDALONE,
+    })
+      .addOperation(
+        Operation.payment({
+          destination: Keypair.random().publicKey(),
+          asset: Asset.native(),
+          amount,
+        })
+      )
+      .setTimeout(180)
+      .build();
+    tx.sign(userKeypair);
+    return tx;
+  };
+
+  it("co-signs a batch of 20 valid transactions in a single request", async () => {
+    const policyEngine = new PolicyEngine();
+    const cosigner = new CosignerService({
+      client,
+      signer,
+      policyEngine,
+    });
+
+    const items = Array.from({ length: 20 }, () => ({
+      xdr: buildSignedTx().toXDR(),
+      walletAddress: userKeypair.publicKey(),
+    }));
+
+    const result = await cosigner.cosignBatch(items);
+
+    expect(result.results).toHaveLength(20);
+    expect(result.approvedCount).toBe(20);
+    expect(result.rejectedCount).toBe(0);
+    for (const item of result.results) {
+      expect(item.approved).toBe(true);
+      expect(item.signedXdr).toBeTruthy();
+      expect(item.index).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("returns item-level error details for invalid transactions in the batch", async () => {
+    const policyEngine = new PolicyEngine();
+    const cosigner = new CosignerService({
+      client,
+      signer,
+      policyEngine,
+    });
+
+    const validTx = buildSignedTx();
+    const unsignedTx = new TransactionBuilder(dummyAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: Networks.STANDALONE,
+    })
+      .addOperation(
+        Operation.payment({
+          destination: Keypair.random().publicKey(),
+          asset: Asset.native(),
+          amount: "10",
+        })
+      )
+      .setTimeout(180)
+      .build();
+
+    const result = await cosigner.cosignBatch([
+      { xdr: validTx.toXDR(), walletAddress: userKeypair.publicKey() },
+      { xdr: unsignedTx.toXDR(), walletAddress: userKeypair.publicKey() },
+      { xdr: "not-a-valid-xdr", walletAddress: userKeypair.publicKey() },
+    ]);
+
+    expect(result.results).toHaveLength(3);
+    expect(result.approvedCount).toBe(1);
+    expect(result.rejectedCount).toBe(2);
+
+    expect(result.results[0].approved).toBe(true);
+    expect(result.results[0].signedXdr).toBeTruthy();
+
+    expect(result.results[1].approved).toBe(false);
+    expect(result.results[1].index).toBe(1);
+    expect(result.results[1].reason).toBe("Transaction is not signed by the wallet owner");
+
+    expect(result.results[2].approved).toBe(false);
+    expect(result.results[2].index).toBe(2);
+    expect(result.results[2].reason).toBeTruthy();
+  });
+
+  it("evaluates each item independently so one failure does not block valid items", async () => {
+    const policyEngine = new PolicyEngine();
+    const cosigner = new CosignerService({
+      client,
+      signer,
+      policyEngine,
+    });
+
+    const otherWallet = Keypair.random().publicKey();
+    const validTx = buildSignedTx();
+
+    const result = await cosigner.cosignBatch([
+      { xdr: validTx.toXDR(), walletAddress: otherWallet },
+      { xdr: buildSignedTx().toXDR(), walletAddress: userKeypair.publicKey() },
+    ]);
+
+    expect(result.results[0].approved).toBe(false);
+    expect(result.results[0].reason).toBe("Transaction source does not match wallet address");
+    expect(result.results[1].approved).toBe(true);
+    expect(result.results[1].signedXdr).toBeTruthy();
+  });
+
+  it("propagates fraud rejections per item with FRAUD_VELOCITY_TRIGGERED", async () => {
+    const policyEngine = new PolicyEngine();
+    const fraudDetector = {
+      evaluate: async () => ({
+        blocked: true,
+        score: 95,
+        violations: ["FRAUD_VELOCITY_TRIGGERED"],
+      }),
+    };
+    const cosigner = new CosignerService({
+      client,
+      signer,
+      policyEngine,
+      fraudDetector: fraudDetector as never,
+    });
+
+    const result = await cosigner.cosignBatch([
+      { xdr: buildSignedTx().toXDR(), walletAddress: userKeypair.publicKey() },
+      { xdr: buildSignedTx().toXDR(), walletAddress: userKeypair.publicKey() },
+    ]);
+
+    expect(result.approvedCount).toBe(0);
+    expect(result.rejectedCount).toBe(2);
+    for (const item of result.results) {
+      expect(item.approved).toBe(false);
+      expect(item.reason).toContain("FRAUD_VELOCITY_TRIGGERED");
+    }
+  });
+
+  it("returns an empty result set for an empty batch", async () => {
+    const policyEngine = new PolicyEngine();
+    const cosigner = new CosignerService({
+      client,
+      signer,
+      policyEngine,
+    });
+
+    const result = await cosigner.cosignBatch([]);
+
+    expect(result.results).toHaveLength(0);
+    expect(result.approvedCount).toBe(0);
+    expect(result.rejectedCount).toBe(0);
+  });
+});
