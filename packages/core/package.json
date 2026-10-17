@@ -2,16 +2,33 @@
   "name": "@lumen/core",
   "version": "0.1.0",
   "type": "module",
+  "sideEffects": false,
   "main": "dist/index.js",
+  "module": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./stellar": {
+      "types": "./dist/stellar/index.d.ts",
+      "import": "./dist/stellar/index.js",
+      "default": "./dist/stellar/index.js"
+    },
+    "./telemetry": {
+      "types": "./dist/telemetry/index.d.ts",
+      "import": "./dist/telemetry/index.js",
+      "default": "./dist/telemetry/index.js"
+    },
+    "./package.json": "./package.json"
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
@@ -20,10 +37,18 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@lumen/types": "workspace:*",
+    "@lumen/types": "workspace:*"
+  },
+  "peerDependencies": {
     "@stellar/stellar-sdk": "^17.0.1"
   },
+  "peerDependenciesMeta": {
+    "@stellar/stellar-sdk": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@stellar/stellar-sdk": "^17.0.1",
     "@vitest/coverage-v8": "^5.0.0",
     "typescript": "^5.8.0",
     "vitest": "^5.0.0"

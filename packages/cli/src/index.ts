@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import { Horizon, TransactionBuilder } from "@stellar/stellar-sdk";
 import fs from "node:fs";
+import { createInitCommand } from "./commands/init";
 
 const program = new Command();
 
@@ -459,5 +460,7 @@ cosignCmd
       process.exit(1);
     }
   });
+
+program.addCommand(createInitCommand());
 
 program.parse(process.argv);
