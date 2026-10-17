@@ -32,10 +32,23 @@ export {
 export { KeyManager, type KeyStorage } from "./keys/manager.js";
 export {
   PasskeyManager,
+  parseDerSignature,
+  derToRawSignature,
+  verifyWebAuthnAssertion,
+  extractChallengeFromClientData,
+  type ParsedDerSignature,
+  type WebAuthnVerificationOpts,
+  type WebAuthnVerificationResult,
   type PasskeyCredential,
   type PasskeyRegistrationOpts,
   type PasskeyAssertionOpts,
 } from "./keys/passkey.js";
+export {
+  HdWallet,
+  mnemonicToSeed,
+  type HdDerivedAccount,
+  type HdWalletOpts,
+} from "./keys/hd-wallet.js";
 export { Wallet } from "./wallet/wallet.js";
 export { Sep41Token } from "./stellar/sep41.js";
 export {
@@ -57,6 +70,21 @@ export {
   type Sep24Transaction,
   type Sep24PollOpts,
 } from "./stellar/sep24.js";
+export {
+  Sep30Client,
+  type Sep30ClientOpts,
+  type Sep30RegisterRequest,
+  type Sep30AccountResponse,
+  type Sep30RegisteredIdentity,
+  type Sep30Signer,
+  type Sep30Identity,
+  type Sep30AuthMethod,
+  type Sep30SignResponse,
+  type Sep30SignRequest,
+  type Sep30RecoveryOpts,
+  type Sep30AuthOpts,
+  type Sep30IdentityType,
+} from "./stellar/sep30.js";
 export {
   encodeMuxedAddress,
   decodeMuxedAddress,
