@@ -59,7 +59,10 @@ jobs:
           wasm-opt --version
 
       - name: Build contracts (wasm32 release)
-        run: cargo build --target ${{ env.WASM_TARGET }} --release
+        run: cargo build --workspace --target ${{ env.WASM_TARGET }} --release
+
+      - name: Run contract tests
+        run: cargo test --workspace
 
       - name: Optimize WASM binaries and enforce size budget
         id: optimize
