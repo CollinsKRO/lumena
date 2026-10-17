@@ -85,6 +85,14 @@ export type {
   UseMultiSigApprovalResult,
 } from "./use-multisig-approval.js";
 
+// #273 — Network health monitor with RPC latency ping and failover alerting
+export { useNetworkHealth } from "./use-network-health.js";
+export type {
+  NetworkHealthStatus,
+  UseNetworkHealthOptions,
+  UseNetworkHealthResult,
+} from "./use-network-health.js";
+
 // #281 — i18n framework
 export { useTranslation, resolveTranslations, translations } from "./i18n/index.js";
 export type { LumenLocale, LumenTranslations, LumenI18nContextValue } from "./i18n/index.js";
@@ -112,17 +120,8 @@ export type {
   LumenConnectModalTheme,
 } from "./components/LumenConnectModal.js";
 
-// #263 — Animated real-time transaction activity feed
-export { LumenTransactionFeed } from "./components/LumenTransactionFeed.js";
-export type {
-  LumenTransactionFeedProps,
-  LumenTransactionStatus,
-} from "./components/LumenTransactionFeed.js";
-
-// #265 — Policy builder and spend limit editor
-export { LumenPolicyEditor } from "./components/LumenPolicyEditor.js";
-export type { LumenPolicyEditorProps } from "./components/LumenPolicyEditor.js";
-
+export { LumenSwapWidget } from "./components/LumenSwapWidget.js";
+export type { LumenSwapWidgetProps } from "./components/LumenSwapWidget.js";
 // #266 — QR scanner with camera access, flash toggle, and URI parsing
 export { LumenQrScanner } from "./components/LumenQrScanner.js";
 export type {
