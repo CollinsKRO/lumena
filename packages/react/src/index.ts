@@ -48,6 +48,15 @@ export type { UseTrustlineResult } from "./use-trustline.js";
 export { useTransactionHistory } from "./use-transaction-history.js";
 export type { Transaction, UseTransactionHistoryResult } from "./use-transaction-history.js";
 
+// #264 — SEP-41 token allowance query and approval hooks
+export { useTokenAllowance, useApproveToken } from "./use-token-allowance.js";
+export type {
+  TokenAllowance,
+  UseTokenAllowanceResult,
+  ApproveTokenResult,
+  UseApproveTokenResult,
+} from "./use-token-allowance.js";
+
 export { useSessionKey } from "./use-session-key.js";
 export type { SessionKeyState } from "./use-session-key.js";
 
