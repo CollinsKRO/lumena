@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { Keypair, TransactionBuilder, Operation, Asset, BASE_FEE } from "@stellar/stellar-sdk";
 import { StellarClient, createSponsoredAccount, setupMultisig } from "@lumen/core";
 import { CosignerService } from "../cosigner/service.js";
@@ -6,6 +6,8 @@ import { FeeSponsorService } from "../fee-sponsor/service.js";
 import { PolicyEngine } from "../policy/engine.js";
 import { createSpendLimitPolicy, createAllowlistPolicy } from "../policy/rules.js";
 import { EnvSigner } from "../signers/EnvSigner.js";
+import { IdempotencyStore, withIdempotency } from "../middleware/idempotency.js";
+import { LifecycleHandler } from "../lifecycle.js";
 
 const HORIZON_URL = process.env.HORIZON_URL ?? "http://localhost:8000";
 const RPC_URL = process.env.RPC_URL ?? "http://localhost:8000/rpc";
@@ -221,6 +223,100 @@ describeNetwork("FeeSponsorService", () => {
 
     const result = await feeSponsor.submit(tx.toXDR());
     expect(result.hash).toBeDefined();
+  });
+});
+
+describe("Idempotency middleware", () => {
+  function createStore() {
+    return new IdempotencyStore({ ttlSeconds: 60 });
+  }
+
+  it("returns the identical cached response on repeated requests", async () => {
+    const store = createStore();
+    const handler = vi.fn(async () => ({ status: 200, body: { hash: "abc123" } }));
+
+    const first = await withIdempotency(store, "key-1", handler);
+    const second = await withIdempotency(store, "key-1", handler);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(second).toEqual(first);
+    expect(second.body).toEqual({ hash: "abc123" });
+  });
+
+  it("coalesces concurrent identical requests into a single execution", async () => {
+    const store = createStore();
+    let resolveHandler: (value: { status: number; body: unknown }) => void = () => {};
+    const handler = vi.fn(
+      () =>
+        new Promise<{ status: number; body: unknown }>((resolve) => {
+          resolveHandler = resolve;
+        })
+    );
+
+    const p1 = withIdempotency(store, "key-2", handler);
+    const p2 = withIdempotency(store, "key-2", handler);
+    const p3 = withIdempotency(store, "key-2", handler);
+
+    resolveHandler({ status: 200, body: { hash: "coalesced" } });
+
+    const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(r2).toEqual(r1);
+    expect(r3).toEqual(r1);
+  });
+
+  it("executes independently for distinct keys", async () => {
+    const store = createStore();
+    const handler = vi.fn(async () => ({ status: 200, body: { ok: true } }));
+
+    await withIdempotency(store, "key-a", handler);
+    await withIdempotency(store, "key-b", handler);
+
+    expect(handler).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("Graceful shutdown lifecycle", () => {
+  it("drains in-flight operations and exits with code 0 on SIGTERM", async () => {
+    const exit = vi.fn();
+    let finishOperation: () => void = () => {};
+    const operation = new Promise<void>((resolve) => {
+      finishOperation = resolve;
+    });
+
+    const lifecycle = new LifecycleHandler({
+      gracePeriodMs: 15_000,
+      exit,
+      closeConnections: vi.fn(async () => {}),
+    });
+
+    lifecycle.track(operation);
+    const shutdown = lifecycle.handleSignal("SIGTERM");
+
+    expect(lifecycle.isShuttingDown()).toBe(true);
+
+    // New work is rejected while draining.
+    expect(() => lifecycle.track(Promise.resolve())).toThrow();
+
+    finishOperation();
+    await shutdown;
+
+    expect(exit).toHaveBeenCalledWith(0);
+  });
+
+  it("exits with code 0 after the grace period even if operations hang", async () => {
+    const exit = vi.fn();
+    const lifecycle = new LifecycleHandler({
+      gracePeriodMs: 10,
+      exit,
+      closeConnections: vi.fn(async () => {}),
+    });
+
+    lifecycle.track(new Promise<void>(() => {}));
+    await lifecycle.handleSignal("SIGINT");
+
+    expect(exit).toHaveBeenCalledWith(0);
   });
 });
 

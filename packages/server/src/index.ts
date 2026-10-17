@@ -19,3 +19,28 @@ export { GcpKmsSigner } from "./signers/GcpKmsSigner.js";
 export { VaultSigner } from "./signers/VaultSigner.js";
 export { AzureKeyVaultSigner } from "./signers/AzureKeyVaultSigner.js";
 export { CosignRequestSchema, FeeBumpRequestSchema, PolicyRequestSchema } from "./validation.js";
+export {
+  createTokenBucketRateLimiter,
+  type TokenBucketRateLimiterOpts,
+  type TokenBucketRateLimiter,
+} from "./middleware/rate-limiter.js";
+export {
+  idempotencyMiddleware,
+  type IdempotencyMiddlewareOpts,
+} from "./middleware/idempotency.js";
+export {
+  rbacMiddleware,
+  requirePermission,
+  hasPermission,
+  parseRoles,
+  type Role,
+  type Permission,
+  type RbacMiddlewareOpts,
+  type AuditLogEntry,
+} from "./middleware/rbac.js";
+export {
+  createShutdownHandler,
+  registerShutdownHandlers,
+  type ShutdownHandlerOpts,
+  type ShutdownHandler,
+} from "./lifecycle.js";

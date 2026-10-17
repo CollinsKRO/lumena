@@ -70,3 +70,53 @@ export function sanitizeError(error: unknown): Record<string, unknown> {
 
   return base;
 }
+
+/**
+ * Structured audit-log entry for RBAC access decisions.
+ *
+ * Records who attempted what, on which route, and whether it was allowed.
+ * Sensitive fields (transaction hashes, stack traces) remain redacted by the
+ * logger configuration above.
+ */
+export interface AuditLogEntry {
+  /** Identifier of the authenticated actor (e.g. JWT `sub`). */
+  actorId: string | null;
+  /** Role carried by the actor's JWT claim. */
+  role: string | null;
+  /** Action being attempted, e.g. `policy:update`. */
+  action: string;
+  /** HTTP method and path of the attempted request. */
+  route: string;
+  /** Outcome of the permission check. */
+  decision: 'allow' | 'deny';
+  /** Optional reason for the decision (e.g. `insufficient_role`). */
+  reason?: string;
+  /** ISO-8601 timestamp of the access attempt. */
+  timestamp?: string;
+}
+
+/**
+ * Write a structured audit-log entry for an RBAC access decision.
+ *
+ * Allowed decisions are logged at `info`; denied decisions at `warn` so they
+ * are easy to surface in alerting. The actor ID and timestamp are always
+ * included.
+ */
+export function auditLog(entry: AuditLogEntry): void {
+  const record = {
+    audit: true,
+    actorId: entry.actorId,
+    role: entry.role,
+    action: entry.action,
+    route: entry.route,
+    decision: entry.decision,
+    ...(entry.reason ? { reason: entry.reason } : {}),
+    timestamp: entry.timestamp ?? new Date().toISOString(),
+  };
+
+  if (entry.decision === 'deny') {
+    logger.warn(record, 'RBAC access denied');
+  } else {
+    logger.info(record, 'RBAC access granted');
+  }
+}
