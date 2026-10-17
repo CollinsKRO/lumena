@@ -95,6 +95,8 @@ export type {
   LumenConnectModalTheme,
 } from "./components/LumenConnectModal.js";
 
+export { LumenSwapWidget } from "./components/LumenSwapWidget.js";
+export type { LumenSwapWidgetProps } from "./components/LumenSwapWidget.js";
 // #266 — QR scanner with camera access, flash toggle, and URI parsing
 export { LumenQrScanner } from "./components/LumenQrScanner.js";
 export type {
