@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { Keypair, TransactionBuilder, Operation, Asset, BASE_FEE } from "@stellar/stellar-sdk";
 import { StellarClient, createSponsoredAccount, setupMultisig } from "@lumen/core";
 import { CosignerService } from "../cosigner/service.js";
@@ -6,6 +6,13 @@ import { FeeSponsorService } from "../fee-sponsor/service.js";
 import { PolicyEngine } from "../policy/engine.js";
 import { createSpendLimitPolicy, createAllowlistPolicy } from "../policy/rules.js";
 import { EnvSigner } from "../signers/EnvSigner.js";
+import { context, trace, SpanStatusCode } from "@opentelemetry/api";
+import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
+import { InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { W3CTraceContextPropagator } from "@opentelemetry/core";
+import { createTracing, createTracingMiddleware, injectTraceContext } from "../tracing.js";
+import express from "express";
+import type { Server } from "node:http";
 
 const HORIZON_URL = process.env.HORIZON_URL ?? "http://localhost:8000";
 const RPC_URL = process.env.RPC_URL ?? "http://localhost:8000/rpc";
@@ -221,6 +228,96 @@ describeNetwork("FeeSponsorService", () => {
 
     const result = await feeSponsor.submit(tx.toXDR());
     expect(result.hash).toBeDefined();
+  });
+});
+
+describe("Distributed tracing", () => {
+  const exporter = new InMemorySpanExporter();
+  const provider = new NodeTracerProvider({
+    spanProcessors: [new SimpleSpanProcessor(exporter)],
+  });
+  provider.register({ propagator: new W3CTraceContextPropagator() });
+
+  let server: Server;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    const app = express();
+    app.use(createTracingMiddleware());
+    app.get("/traced", async (_req, res) => {
+      // Simulate an outgoing Stellar RPC call carrying the propagated context.
+      const headers: Record<string, string> = {};
+      injectTraceContext(headers);
+      await fetch(`${baseUrl}/mock-horizon`, { headers });
+      res.json({ ok: true });
+    });
+    app.get("/mock-horizon", (_req, res) => {
+      res.json({ ledger: 1 });
+    });
+
+    await new Promise<void>((resolve) => {
+      server = app.listen(0, () => {
+        const address = server.address();
+        const port = typeof address === "object" && address ? address.port : 0;
+        baseUrl = `http://127.0.0.1:${port}`;
+        resolve();
+      });
+    });
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await provider.shutdown();
+  });
+
+  it("creates spans for an incoming HTTP request", async () => {
+    exporter.reset();
+    const res = await fetch(`${baseUrl}/traced`);
+    expect(res.ok).toBe(true);
+
+    const spans = exporter.getFinishedSpans();
+    expect(spans.length).toBeGreaterThan(0);
+    const httpSpan = spans.find((s) => s.name.includes("GET") || s.name.includes("/traced"));
+    expect(httpSpan).toBeDefined();
+    expect(httpSpan!.status.code).not.toBe(SpanStatusCode.ERROR);
+  });
+
+  it("propagates W3C traceparent to outgoing Stellar RPC calls", async () => {
+    exporter.reset();
+    const tracer = trace.getTracer("test");
+    const span = tracer.startSpan("root");
+    const traceId = span.spanContext().traceId;
+
+    const headers: Record<string, string> = {};
+    context.with(trace.setSpan(context.active(), span), () => {
+      injectTraceContext(headers);
+    });
+    span.end();
+
+    expect(headers.traceparent).toBeDefined();
+    expect(headers.traceparent).toContain(traceId);
+    expect(headers.traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/);
+  });
+
+  it("continues an incoming traceparent context", async () => {
+    exporter.reset();
+    const incomingTraceId = "0af7651916cd43dd8448eb211c80319c";
+    const incomingSpanId = "b7ad6b7169203331";
+    const traceparent = `00-${incomingTraceId}-${incomingSpanId}-01`;
+
+    const res = await fetch(`${baseUrl}/traced`, {
+      headers: { traceparent },
+    });
+    expect(res.ok).toBe(true);
+
+    const spans = exporter.getFinishedSpans();
+    expect(spans.some((s) => s.spanContext().traceId === incomingTraceId)).toBe(true);
+  });
+
+  it("exports spans via the configured tracer provider", () => {
+    const tracing = createTracing({ serviceName: "lumen-test" });
+    expect(tracing).toBeDefined();
+    expect(typeof tracing.shutdown).toBe("function");
   });
 });
 

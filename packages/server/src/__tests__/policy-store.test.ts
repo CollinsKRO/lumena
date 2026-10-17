@@ -78,6 +78,128 @@ describe("RedisPolicyStore", () => {
   });
 });
 
+describe("RedisPolicyStore pub/sub invalidation", () => {
+  function createMockRedis() {
+    const subscribers = new Map<string, Array<(channel: string, message: string) => void>>();
+    const mockRedis = {
+      get: vi.fn().mockResolvedValue(null),
+      set: vi.fn().mockResolvedValue("OK"),
+      del: vi.fn().mockResolvedValue(1),
+      incrbyfloat: vi.fn().mockResolvedValue("0"),
+      incr: vi.fn().mockResolvedValue(1),
+      expire: vi.fn().mockResolvedValue(1),
+      zadd: vi.fn().mockResolvedValue(1),
+      zremrangebyscore: vi.fn().mockResolvedValue(0),
+      zcard: vi.fn().mockResolvedValue(0),
+      subscribe: vi.fn(async (channel: string, handler: (channel: string, message: string) => void) => {
+        const handlers = subscribers.get(channel) ?? [];
+        handlers.push(handler);
+        subscribers.set(channel, handlers);
+        return 1;
+      }),
+      unsubscribe: vi.fn(async (channel: string) => {
+        subscribers.delete(channel);
+        return 1;
+      }),
+      publish: vi.fn(async (channel: string, message: string) => {
+        const handlers = subscribers.get(channel) ?? [];
+        for (const handler of handlers) {
+          handler(channel, message);
+        }
+        return handlers.length;
+      }),
+    };
+    return mockRedis;
+  }
+
+  it("invalidates cached policy on a second replica when an update event is published", async () => {
+    const mockRedis = createMockRedis();
+    const replicaA = new RedisPolicyStore(mockRedis as any);
+    const replicaB = new RedisPolicyStore(mockRedis as any);
+
+    await replicaA.subscribeToPolicyUpdates();
+    await replicaB.subscribeToPolicyUpdates();
+    expect(mockRedis.subscribe).toHaveBeenCalledWith(
+      "lumen:policies:updated",
+      expect.any(Function),
+    );
+
+    // Prime replica B's cache with a stale policy.
+    const stalePolicy: Policy = {
+      id: "p1",
+      walletId: "w1",
+      rules: [{ type: "max_operations", maxOperations: 3 }],
+      createdAt: new Date(),
+    };
+    mockRedis.get.mockResolvedValueOnce(JSON.stringify(stalePolicy));
+    const cached = await replicaB.getPolicy("w1");
+    expect(cached?.rules).toEqual(stalePolicy.rules);
+
+    // Admin updates the policy on replica A and publishes the event.
+    const updatedPolicy: Policy = {
+      id: "p1",
+      walletId: "w1",
+      rules: [{ type: "max_operations", maxOperations: 10 }],
+      createdAt: stalePolicy.createdAt,
+    };
+    mockRedis.get.mockResolvedValue(JSON.stringify(updatedPolicy));
+    await replicaA.savePolicy(updatedPolicy);
+    await replicaA.publishPolicyUpdate("w1");
+
+    // Replica B should now read the fresh policy from Redis.
+    const refreshed = await replicaB.getPolicy("w1");
+    expect(refreshed?.rules).toEqual(updatedPolicy.rules);
+  });
+
+  it("propagates invalidation to all replicas within 100ms", async () => {
+    const mockRedis = createMockRedis();
+    const replicas = [
+      new RedisPolicyStore(mockRedis as any),
+      new RedisPolicyStore(mockRedis as any),
+      new RedisPolicyStore(mockRedis as any),
+    ];
+
+    for (const replica of replicas) {
+      await replica.subscribeToPolicyUpdates();
+    }
+
+    const stalePolicy: Policy = {
+      id: "p1",
+      walletId: "w1",
+      rules: [{ type: "max_operations", maxOperations: 1 }],
+      createdAt: new Date(),
+    };
+    mockRedis.get.mockResolvedValue(JSON.stringify(stalePolicy));
+    for (const replica of replicas) {
+      await replica.getPolicy("w1");
+    }
+
+    const updatedPolicy: Policy = {
+      ...stalePolicy,
+      rules: [{ type: "max_operations", maxOperations: 5 }],
+    };
+    mockRedis.get.mockResolvedValue(JSON.stringify(updatedPolicy));
+
+    const start = Date.now();
+    await replicas[0].publishPolicyUpdate("w1");
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(100);
+
+    for (const replica of replicas) {
+      const policy = await replica.getPolicy("w1");
+      expect(policy?.rules).toEqual(updatedPolicy.rules);
+    }
+  });
+
+  it("stops invalidating after unsubscribe", async () => {
+    const mockRedis = createMockRedis();
+    const store = new RedisPolicyStore(mockRedis as any);
+    await store.subscribeToPolicyUpdates();
+    await store.unsubscribeFromPolicyUpdates();
+    expect(mockRedis.unsubscribe).toHaveBeenCalledWith("lumen:policies:updated");
+  });
+});
+
 describe("FilePolicyStore", () => {
   it("persists policies across store instances using a local JSON file", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "lumen-policy-test-"));
