@@ -225,7 +225,7 @@ export function createServer(opts: ServerOpts): ServerResult {
   if (opts.apiKey) {
     app.use((req: Request, res: Response, next: NextFunction) => {
       const cleanPath = (req.path || "").replace(/\/+$/, "") || "/";
-      if (cleanPath === "/health" || cleanPath === "/metrics") {
+      if (cleanPath === "/health" || cleanPath === "/health/deep" || cleanPath === "/metrics") {
         return next();
       }
 
@@ -312,6 +312,21 @@ export function createServer(opts: ServerOpts): ServerResult {
         network: client.config.network,
         version: "0.1.0",
       });
+    }),
+  );
+
+  app.get(
+    "/health/deep",
+    wrapHandler(async (_req: Request, res: Response) => {
+      const report = await runDeepHealthCheck({
+        client,
+        cosignerSigner: opts.cosignerSigner,
+        feeSponsorService,
+        sponsorMonitorService,
+        readinessCheck: opts.readinessCheck,
+        minSponsorBalance: opts.minSponsorBalance,
+      });
+      res.status(report.healthy ? 200 : 503).json(report);
     }),
   );
 
