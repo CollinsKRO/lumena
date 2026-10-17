@@ -147,3 +147,24 @@ export {
   type TelemetryOpts,
   type DiagnosticsHookOpts,
 } from "./telemetry.js";
+export {
+  Sep38Client,
+  computeConversion,
+  type Sep38Price,
+  type Sep38IndicativeQuote,
+  type Sep38FirmQuote,
+  type Sep38QuoteRequest,
+} from "./stellar/sep38.js";
+export {
+  verifyProof,
+  encodeProofForMemo,
+  decodeProofFromMemo,
+  encodeProofForContract,
+} from "./crypto/zk.js";
+export {
+  encryptKeypair,
+  decryptKeypair,
+  exportKeystore,
+  importKeystore,
+  type KeystoreFile,
+} from "./keys/keystore.js";
