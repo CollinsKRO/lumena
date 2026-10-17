@@ -68,13 +68,12 @@ export type {
   UseMultiSigApprovalResult,
 } from "./use-multisig-approval.js";
 
-// #273 — Network health hook with RPC latency ping and failover alerting
+// #273 — Network health monitor with RPC latency ping and failover alerting
 export { useNetworkHealth } from "./use-network-health.js";
 export type {
   NetworkHealthStatus,
-  NetworkHealthResult,
-  NetworkHealthFailoverDetails,
   UseNetworkHealthOptions,
+  UseNetworkHealthResult,
 } from "./use-network-health.js";
 
 // #281 — i18n framework
