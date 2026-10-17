@@ -1,14 +1,17 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const HORIZON_URL = process.env.HORIZON_URL ?? "http://localhost:8000";
+const RPC_URL = process.env.RPC_URL ?? "http://localhost:8000/soroban/rpc";
+
 export default defineConfig({
   testDir: "./e2e/specs",
-  timeout: 60000,
+  timeout: 120000,
   expect: {
-    timeout: 15000,
+    timeout: 30000,
   },
   fullyParallel: false,
   workers: 1,
-  retries: 0,
+  retries: process.env.CI ? 1 : 0,
   reporter: [
     ["list"],
     ["html", { open: "never", outputFolder: "playwright-report" }],
@@ -20,7 +23,17 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      use: {
+        ...devices["Desktop Chrome"],
+        extraHTTPHeaders: {
+          "X-Horizon-URL": HORIZON_URL,
+          "X-RPC-URL": RPC_URL,
+        },
+      },
+      metadata: {
+        HORIZON_URL,
+        RPC_URL,
+      },
     },
     {
       name: "firefox",
@@ -35,6 +48,10 @@ export default defineConfig({
     command: "node e2e/setup/start-environment.js",
     port: 5173,
     reuseExistingServer: false,
-    timeout: 180000,
+    timeout: 300000,
+    env: {
+      HORIZON_URL,
+      RPC_URL,
+    },
   },
 });

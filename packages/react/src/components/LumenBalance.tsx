@@ -97,10 +97,13 @@ export function LumenBalance({
 
   return (
     <div className={["lumen-balance", className].filter(Boolean).join(" ")}>
-      {renderContent()}
+      <span className="lumen-balance__live" aria-live="polite" aria-atomic="true">
+        {renderContent()}
+      </span>
       <button
         type="button"
-        aria-label="Refresh balance"
+        aria-label={loading ? "Refreshing balance" : "Refresh balance"}
+        aria-busy={loading}
         onClick={() => {
           void handleRefresh();
         }}

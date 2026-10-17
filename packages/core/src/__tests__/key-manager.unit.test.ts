@@ -160,4 +160,76 @@ describe("KeyManager", () => {
       expect(kp).toBeInstanceOf(Keypair);
     });
   });
+
+  describe("encrypted keystore export/import", () => {
+    it("exports an envelope containing salt, IV, ciphertext and auth tag", async () => {
+      const kp = keyManager.generateKeypair();
+      const envelope = await keyManager.exportKeystore(kp, "strong-password");
+
+      expect(envelope).toHaveProperty("salt");
+      expect(envelope).toHaveProperty("iv");
+      expect(envelope).toHaveProperty("ciphertext");
+      expect(envelope).toHaveProperty("authTag");
+
+      expect(typeof envelope.salt).toBe("string");
+      expect(typeof envelope.iv).toBe("string");
+      expect(typeof envelope.ciphertext).toBe("string");
+      expect(typeof envelope.authTag).toBe("string");
+
+      expect(envelope.salt).not.toBe("");
+      expect(envelope.iv).not.toBe("");
+      expect(envelope.ciphertext).not.toBe("");
+      expect(envelope.authTag).not.toBe("");
+
+      // The plaintext secret must never appear in the serialized envelope.
+      expect(JSON.stringify(envelope)).not.toContain(kp.secret());
+    });
+
+    it("round-trips: importing with the correct password restores the keypair", async () => {
+      const original = keyManager.generateKeypair();
+      const envelope = await keyManager.exportKeystore(original, "strong-password");
+
+      const restored = await keyManager.importKeystore(envelope, "strong-password");
+
+      expect(restored.publicKey()).toBe(original.publicKey());
+      expect(restored.secret()).toBe(original.secret());
+    });
+
+    it("fails auth-tag verification when the password is wrong", async () => {
+      const original = keyManager.generateKeypair();
+      const envelope = await keyManager.exportKeystore(original, "correct-password");
+
+      await expect(keyManager.importKeystore(envelope, "wrong-password")).rejects.toThrow();
+    });
+
+    it("fails auth-tag verification when the ciphertext is tampered with", async () => {
+      const original = keyManager.generateKeypair();
+      const envelope = await keyManager.exportKeystore(original, "strong-password");
+
+      const tampered = {
+        ...envelope,
+        ciphertext: envelope.ciphertext.slice(0, -2) + (envelope.ciphertext.endsWith("00") ? "11" : "00"),
+      };
+
+      await expect(keyManager.importKeystore(tampered, "strong-password")).rejects.toThrow();
+    });
+
+    it("produces a versioned envelope format", async () => {
+      const kp = keyManager.generateKeypair();
+      const envelope = await keyManager.exportKeystore(kp, "strong-password");
+
+      expect(envelope).toHaveProperty("version");
+      expect(typeof envelope.version).toBe("number");
+      expect(envelope.version).toBeGreaterThanOrEqual(1);
+    });
+
+    it("uses a fresh salt and IV for each export", async () => {
+      const kp = keyManager.generateKeypair();
+      const first = await keyManager.exportKeystore(kp, "strong-password");
+      const second = await keyManager.exportKeystore(kp, "strong-password");
+
+      expect(first.salt).not.toBe(second.salt);
+      expect(first.iv).not.toBe(second.iv);
+    });
+  });
 });

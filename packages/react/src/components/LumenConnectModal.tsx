@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useState } from "react";
+import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useCreateWallet } from "../use-create-wallet.js";
 import { useCreateWalletWithPasskey } from "../use-create-wallet-with-passkey.js";
 
@@ -95,6 +95,9 @@ export function LumenConnectModal({
 }: LumenConnectModalProps): React.ReactElement | null {
   const t = mergeTheme(theme);
   const titleId = useId();
+  const descriptionId = useId();
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
   const [activeTab, setActiveTab] = useState<LumenConnectModalTab>(defaultTab);
 
   const createWallet = useCreateWallet();
@@ -111,14 +114,70 @@ export function LumenConnectModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, defaultTab]);
 
-  // Close on Escape.
+  // Focus management: remember the previously focused element, move focus into
+  // the dialog on open, trap Tab/Shift+Tab within it, and restore focus on close.
   useEffect(() => {
     if (!open) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+
+    previouslyFocusedRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
+    const getFocusable = (): HTMLElement[] => {
+      const root = dialogRef.current;
+      if (!root) return [];
+      const selector =
+        'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+      return Array.from(root.querySelectorAll<HTMLElement>(selector)).filter(
+        (el) => el.offsetParent !== null || el === document.activeElement,
+      );
     };
+
+    // Initial focus: first focusable element, falling back to the dialog itself.
+    const focusables = getFocusable();
+    if (focusables.length > 0) {
+      focusables[0].focus();
+    } else if (dialogRef.current) {
+      dialogRef.current.focus();
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const items = getFocusable();
+      if (items.length === 0) {
+        event.preventDefault();
+        dialogRef.current?.focus();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+
+      if (event.shiftKey) {
+        if (active === first || !dialogRef.current?.contains(active)) {
+          event.preventDefault();
+          last.focus();
+        }
+      } else if (active === last || !dialogRef.current?.contains(active)) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
     document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      const previous = previouslyFocusedRef.current;
+      if (previous && typeof previous.focus === "function" && document.contains(previous)) {
+        previous.focus();
+      }
+      previouslyFocusedRef.current = null;
+    };
   }, [open, onClose]);
 
   const handleCreate = useCallback(async () => {
@@ -209,9 +268,12 @@ export function LumenConnectModal({
       }}
     >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+        tabIndex={-1}
         className={["lumen-connect-modal", className].filter(Boolean).join(" ")}
         onClick={(event) => event.stopPropagation()}
         style={{
@@ -258,6 +320,12 @@ export function LumenConnectModal({
           </button>
         </div>
 
+        {/* Screen-reader description of the dialog */}
+        <p id={descriptionId} style={{ position: "absolute", width: 1, height: 1, padding: 0, margin: -1, overflow: "hidden", clip: "rect(0, 0, 0, 0)", whiteSpace: "nowrap", border: 0 }}>
+          Choose how to authenticate your Stellar wallet. Use the tabs to create a new seedless
+          wallet or connect an existing device or passkey.
+        </p>
+
         {/* Tabs */}
         <div role="tablist" aria-label="Authentication method" style={{ display: "flex", marginBottom: 20 }}>
           {tabButton(TAB_CREATE, "Create New Seedless Wallet")}
@@ -295,15 +363,22 @@ export function LumenConnectModal({
           </div>
         )}
 
-        {/* Error */}
-        {error && (
-          <p
-            role="alert"
-            style={{ ...baseFont, color: t.errorColor, marginTop: 12, marginBottom: 0 }}
-          >
-            {error.message}
-          </p>
-        )}
+        {/* Live region announcing loading and error status to screen readers */}
+        <div aria-live="polite" aria-atomic="true" role="status">
+          {loading && (
+            <p style={{ ...baseFont, color: t.mutedColor, marginTop: 12, marginBottom: 0 }}>
+              {activeTab === TAB_CREATE ? "Creating wallet…" : "Connecting…"}
+            </p>
+          )}
+          {error && (
+            <p
+              role="alert"
+              style={{ ...baseFont, color: t.errorColor, marginTop: 12, marginBottom: 0 }}
+            >
+              {error.message}
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );

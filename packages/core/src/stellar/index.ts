@@ -157,6 +157,17 @@ export class StellarClient {
   }
 }
 
+export {
+  StreamClient,
+  type StreamClientOptions,
+  type StreamEvent,
+  type StreamEventType,
+  type StreamStatus,
+  type StreamStatusEvent,
+  type StreamSubscription,
+  type StreamTopic,
+} from './stream.js';
+
 export interface SponsoredAccountResult {
   publicKey: string;
   secretKey: string;
