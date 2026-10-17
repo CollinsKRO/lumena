@@ -93,6 +93,7 @@ Two implementations ship with the server:
 | `GcpKmsSigner` | `src/signers/GcpKmsSigner.ts` | Google Cloud KMS asymmetric signer |
 | `VaultSigner` | `src/signers/VaultSigner.ts` | HashiCorp Vault Transit native Ed25519 signer |
 | `AzureKeyVaultSigner` | `src/signers/AzureKeyVaultSigner.ts` | Azure Key Vault envelope-encryption signer |
+| `Pkcs11Signer` | `src/signers/Pkcs11Signer.ts` | On-premises / cloud HSM via the PKCS#11 C API |
 
 To add your own provider (HashiCorp Vault, GCP KMS, Nitro Enclave, etc.),
 implement the `Signer` interface and wire it in `main.ts`.
@@ -384,6 +385,112 @@ createServer({ cosignerSigner, feePayerSigner: cosignerSigner, ... });
 - Enable Azure Key Vault [diagnostic logging](https://learn.microsoft.com/en-us/azure/key-vault/general/monitor-key-vault)
   and ship logs to an immutable store (Azure Monitor Log Analytics with archive policy).
 
+### PKCS#11 HSM (on-premises or cloud)
+
+`Pkcs11Signer` talks to any HSM that exposes the PKCS#11 C API (SoftHSM2,
+Thales Luna, Utimaco, YubiHSM 2, AWS CloudHSM client, etc.) through the
+`pkcs11js` binding. The Ed25519 private key is generated inside the token and
+**never leaves the HSM boundary** — the server only ever sees the public key
+and signatures.
+
+#### Installation
+
+```bash
+pnpm add pkcs11js
+```
+
+`pkcs11js` loads the vendor's PKCS#11 shared library at runtime, so the HSM
+client software must be installed on the host (or in the container image).
+
+#### Environment Variables for Pkcs11Signer
+
+```bash
+SIGNER_PROVIDER=pkcs11
+
+# Path to the vendor PKCS#11 module (.so / .dylib / .dll)
+PKCS11_MODULE_PATH=/usr/lib/softhsm/libsofthsm2.so
+
+# Slot ID that contains the token (use PKCS11_LIST_SLOTS=1 to discover)
+PKCS11_SLOT_ID=0
+
+# User PIN for the token (prefer injecting from a secrets manager)
+PKCS11_PIN=1234
+
+# CKA_LABEL of the private key object inside the token
+PKCS11_KEY_LABEL=lumen-cosigner
+
+# Optional
+PKCS11_KEY_ID=            # hex CKA_ID, used instead of the label if set
+PKCS11_READ_ONLY=true     # open a read-only session (default: true)
+```
+
+Leave `COSIGNER_SECRET` and `FEE_PAYER_SECRET` **unset** when using PKCS#11.
+
+Usage with `Pkcs11Signer`:
+
+```ts
+import { Pkcs11Signer } from "@lumen/server";
+
+const cosigner = await Pkcs11Signer.fromEnv("PKCS11");
+```
+
+#### Provisioning the key inside the HSM
+
+The key must be an Ed25519 key pair with `CKA_SIGN=true`. With SoftHSM2:
+
+```bash
+# Initialise a token in slot 0 (one-time)
+softhsm2-util --init-token --free --label lumen --so-pin 0000 --pin 1234
+
+# Generate the Ed25519 key pair inside the token
+pkcs11-tool --module /usr/lib/softhsm/libsofthsm2.so \
+  --login --pin 1234 \
+  --keypairgen --key-type EC:edwards25519 \
+  --label lumen-cosigner --id 01
+
+# Verify the public key is visible
+pkcs11-tool --module /usr/lib/softhsm/libsofthsm2.so \
+  --login --pin 1234 --list-objects --type pubkey
+```
+
+#### Local testing with SoftHSM2
+
+SoftHSM2 is a software HSM that implements the PKCS#11 API, so the full
+signing path can be exercised in CI without hardware.
+
+```bash
+# Debian / Ubuntu
+sudo apt-get install -y softhsm2 opensc
+
+# macOS
+brew install softhsm opensc
+```
+
+Then run the integration test:
+
+```bash
+PKCS11_MODULE_PATH=/usr/lib/softhsm/libsofthsm2.so \
+PKCS11_SLOT_ID=0 \
+PKCS11_PIN=1234 \
+PKCS11_KEY_LABEL=lumen-cosigner \
+pnpm --filter @lumen/server test -- Pkcs11Signer
+```
+
+The test signs a known payload and verifies the signature against the
+token's public key, confirming that signing works end-to-end without the
+private key ever being exported.
+
+#### Security Notes
+
+- The PIN is a secret: inject it from a secrets manager or an HSM-protected
+  environment variable, never from a committed `.env` file.
+- Run the server as a dedicated OS user with read access to the PKCS#11
+  module and no shell access to the HSM management tools.
+- Use `CKA_SIGN`-only key objects (no `CKA_DECRYPT`, no `CKA_EXTRACTABLE`).
+- Rotate the key by generating a new key pair in the token (see §6) and
+  updating `PKCS11_KEY_LABEL` / `PKCS11_KEY_ID`.
+- Enable the HSM vendor's audit logging and ship it to an immutable store.
+
 ---
 
 ## 6. Key rotation policy
@@ -587,9 +694,11 @@ If you suspect either key has been compromised:
 
 Before going live with real user funds:
 
-- [ ] `SIGNER_PROVIDER=awskms` (or equivalent HSM provider) is set
+- [ ] `SIGNER_PROVIDER=awskms` (or `pkcs11`, or another equivalent HSM provider) is set
 - [ ] `COSIGNER_SECRET` and `FEE_PAYER_SECRET` are **not** set in production config
 - [ ] KMS keys are in a custom key store backed by CloudHSM (or equivalent)
+- [ ] For PKCS#11: `PKCS11_MODULE_PATH`, `PKCS11_SLOT_ID`, `PKCS11_PIN`, and
+      `PKCS11_KEY_LABEL` are set and the PIN is sourced from a secrets manager
 - [ ] IAM policy is least-privilege (Sign + GetPublicKey only, scoped to key ARNs)
 - [ ] CloudTrail is enabled and log file validation is on
 - [ ] Structured audit logs are shipped to an immutable store

@@ -9,6 +9,7 @@ import {
   createVelocityPolicy,
   createMaxOperationsPolicy,
 } from "../policy/rules.js";
+import { PolicyStore } from "../policy/store.js";
 import type { MaxOperationsRule } from "@lumen/types";
 import type { Transaction } from "@stellar/stellar-sdk";
 
@@ -428,5 +429,88 @@ describe("PolicyEngine Velocity Limits", () => {
       expect(res.approved).toBe(false);
       expect(res.reason).toContain("exceeds limit of 1");
     });
+  });
+});
+
+describe("PolicyEngine Dynamic Policy Reload (invalidatePolicy)", () => {
+  const walletId = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+
+  it("clears the cached policy so subsequent evaluations reload the updated policy", async () => {
+    const store = new PolicyStore();
+    const engine = new PolicyEngine({ store });
+
+    await store.setPolicy(createBlocklistPolicy(walletId, ["GBLOCKED"]));
+
+    const blockedTx = {
+      operations: [{ type: "payment", destination: "GBLOCKED", amount: "10" }],
+    } as unknown as Transaction;
+    expect((await engine.evaluate({ walletAddress: walletId, transaction: blockedTx })).approved).toBe(
+      false,
+    );
+
+    // Admin updates the policy in the store (e.g. via another replica).
+    await store.setPolicy(createBlocklistPolicy(walletId, ["GOTHERBLOCKED"]));
+
+    // Without invalidation the engine may still serve the stale cached policy.
+    engine.invalidatePolicy(walletId);
+
+    const result = await engine.evaluate({ walletAddress: walletId, transaction: blockedTx });
+    expect(result.approved).toBe(true);
+  });
+
+  it("resets spend-limit tracking state on invalidation", async () => {
+    const store = new PolicyStore();
+    const engine = new PolicyEngine({ store });
+
+    await store.setPolicy(createSpendLimitPolicy(walletId, "native", "60", "100"));
+
+    const tx = {
+      operations: [{ type: "payment", destination: "GDEST", amount: "50", asset: "native" }],
+    } as unknown as Transaction;
+
+    expect((await engine.evaluate({ walletAddress: walletId, transaction: tx })).approved).toBe(
+      true,
+    );
+
+    // A second 55 would exceed the daily limit of 100.
+    const tx2 = {
+      operations: [{ type: "payment", destination: "GDEST", amount: "55", asset: "native" }],
+    } as unknown as Transaction;
+    expect((await engine.evaluate({ walletAddress: walletId, transaction: tx2 })).approved).toBe(
+      false,
+    );
+
+    // Invalidation clears accumulated spend tracking.
+    engine.invalidatePolicy(walletId);
+
+    expect((await engine.evaluate({ walletAddress: walletId, transaction: tx2 })).approved).toBe(
+      true,
+    );
+  });
+
+  it("resets velocity tracking state on invalidation", async () => {
+    const now = 1_700_000_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+
+    const store = new PolicyStore();
+    const engine = new PolicyEngine({ store });
+    await store.setPolicy(createVelocityPolicy(walletId, 2, 5));
+
+    const transaction = { operations: [] } as unknown as Transaction;
+
+    expect((await engine.evaluate({ walletAddress: walletId, transaction })).approved).toBe(true);
+    expect((await engine.evaluate({ walletAddress: walletId, transaction })).approved).toBe(true);
+    expect((await engine.evaluate({ walletAddress: walletId, transaction })).approved).toBe(false);
+
+    engine.invalidatePolicy(walletId);
+
+    expect((await engine.evaluate({ walletAddress: walletId, transaction })).approved).toBe(true);
+
+    vi.restoreAllMocks();
+  });
+
+  it("is a no-op for wallets without cached state", () => {
+    const engine = new PolicyEngine();
+    expect(() => engine.invalidatePolicy(walletId)).not.toThrow();
   });
 });

@@ -75,16 +75,10 @@ jobs:
         run: cargo test --workspace --all-features
 
       - name: Build contracts (wasm32 release)
-        run: |
-          set -euo pipefail
-          for crate in $CONTRACT_CRATES; do
-            if [ ! -f "${crate}/Cargo.toml" ]; then
-              echo "::error::Missing contract crate at ${crate} (no Cargo.toml)."
-              exit 1
-            fi
-            echo "Building ${crate} for ${WASM_TARGET}..."
-            cargo build --manifest-path "${crate}/Cargo.toml" --target "${WASM_TARGET}" --release
-          done
+        run: cargo build --workspace --target ${{ env.WASM_TARGET }} --release
+
+      - name: Run contract tests
+        run: cargo test --workspace
 
       - name: Optimize WASM binaries and enforce size budget
         id: optimize
@@ -93,12 +87,16 @@ jobs:
           mkdir -p artifacts/wasm
           shopt -s nullglob
           failed=0
-          for crate in $CONTRACT_CRATES; do
-            crate_name="$(basename "$crate")"
-            wasm_files=("target/${WASM_TARGET}/release/${crate_name//-/_}.wasm")
-            if [ ! -f "${wasm_files[0]}" ]; then
-              echo "::error::No WASM binary was produced for ${crate}."
-              exit 1
+          for wasm in "${wasm_files[@]}"; do
+            name="$(basename "$wasm")"
+            out="artifacts/wasm/${name}"
+            echo "Optimizing ${name}..."
+            wasm-opt -Oz --strip-debug "$wasm" -o "$out"
+            size=$(stat -c%s "$out")
+            echo "${name}: ${size} bytes"
+            if [ "$size" -gt "${SIZE_BUDGET_BYTES}" ]; then
+              echo "::error file=${out}::${name} exceeds the 64KB size budget (${size} > ${SIZE_BUDGET_BYTES} bytes)."
+              failed=1
             fi
             for wasm in "${wasm_files[@]}"; do
               name="$(basename "$wasm")"

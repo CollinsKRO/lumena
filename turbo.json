@@ -25,11 +25,13 @@
     },
     "contracts:build": {
       "dependsOn": ["^build"],
-      "outputs": ["contracts/target/**"]
+      "outputs": ["target/**"]
     },
     "contracts:test": {
-      "dependsOn": ["contracts:build"],
-      "outputs": ["contracts/target/**"]
+      "dependsOn": ["contracts:build"]
+    },
+    "contracts:lint": {
+      "dependsOn": ["contracts:build"]
     }
   }
 }

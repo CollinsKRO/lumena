@@ -188,30 +188,155 @@ export class Sep41Token {
   }
 
   /**
-   * Encodes a SEP-41 `burn` Soroban operation (from, amount).
+   * Encodes a SEP-41 `transfer` operation that moves `amount` from `from`
+   * into the escrow contract identified by `escrowContractId`.
+   *
+   * This is the funding step for an escrow deposit: the depositor transfers
+   * tokens (or XLM via the native asset contract) to the escrow contract.
    */
-  burn(from: string, amount: string | bigint): xdr.Operation {
+  buildDeposit(
+    from: string,
+    escrowContractId: string,
+    amount: string | bigint
+  ): xdr.Operation {
+    return this.transfer(from, escrowContractId, amount);
+  }
+
+  /**
+   * Encodes a SEP-41 `approve` operation allowing the escrow contract to
+   * spend `amount` of the owner's tokens until `expirationLedger`.
+   *
+   * Useful when the escrow pulls funds via `transfer_from` instead of
+   * receiving a direct transfer.
+   */
+  buildApproveForEscrow(
+    owner: string,
+    escrowContractId: string,
+    amount: string | bigint,
+    expirationLedger: number
+  ): xdr.Operation {
+    return this.approve(owner, escrowContractId, amount, expirationLedger);
+  }
+
+  /**
+   * Encodes a SEP-41 `transfer_from` operation pulling `amount` from `from`
+   * into the escrow contract, using the allowance granted to the escrow.
+   */
+  buildDepositFrom(
+    escrowContractId: string,
+    from: string,
+    amount: string | bigint
+  ): xdr.Operation {
+    return this.transferFrom(escrowContractId, from, escrowContractId, amount);
+  }
+
+  /**
+   * Builds an invocation of the escrow contract's `deposit` method.
+   *
+   * @param escrowContractId The escrow contract to invoke.
+   * @param depositor The account funding the escrow.
+   * @param token The token contract (SEP-41 or native asset) being escrowed.
+   * @param amount The amount to lock in escrow.
+   * @param recipient The designated recipient of the funds.
+   * @param releaseLedger Optional ledger at which the escrow expires/refunds.
+   */
+  static buildEscrowDeposit(
+    escrowContractId: string,
+    depositor: string,
+    token: string,
+    amount: string | bigint,
+    recipient: string,
+    releaseLedger?: number
+  ): xdr.Operation {
+    const args: xdr.ScVal[] = [
+      new Address(depositor).toScVal(),
+      new Address(token).toScVal(),
+      nativeToScVal(BigInt(amount), { type: "i128" }),
+      new Address(recipient).toScVal(),
+    ];
+    if (releaseLedger !== undefined) {
+      args.push(nativeToScVal(releaseLedger, { type: "u32" }));
+    }
     return Operation.invokeContractFunction({
-      contract: this.contractId,
-      function: "burn",
+      contract: escrowContractId,
+      function: "deposit",
+      args,
+    });
+  }
+
+  /**
+   * Builds an invocation of the escrow contract's `release` method.
+   */
+  static buildEscrowRelease(
+    escrowContractId: string,
+    escrowId: string | bigint,
+    caller: string
+  ): xdr.Operation {
+    return Operation.invokeContractFunction({
+      contract: escrowContractId,
+      function: "release",
       args: [
-        new Address(from).toScVal(),
-        nativeToScVal(BigInt(amount), { type: "i128" }),
+        nativeToScVal(BigInt(escrowId), { type: "u64" }),
+        new Address(caller).toScVal(),
       ],
     });
   }
 
   /**
-   * Encodes a SEP-41 `burn_from` Soroban operation (spender, from, amount).
+   * Builds an invocation of the escrow contract's `refund` method.
    */
-  burnFrom(spender: string, from: string, amount: string | bigint): xdr.Operation {
+  static buildEscrowRefund(
+    escrowContractId: string,
+    escrowId: string | bigint,
+    caller: string
+  ): xdr.Operation {
     return Operation.invokeContractFunction({
-      contract: this.contractId,
-      function: "burn_from",
+      contract: escrowContractId,
+      function: "refund",
       args: [
-        new Address(spender).toScVal(),
-        new Address(from).toScVal(),
-        nativeToScVal(BigInt(amount), { type: "i128" }),
+        nativeToScVal(BigInt(escrowId), { type: "u64" }),
+        new Address(caller).toScVal(),
+      ],
+    });
+  }
+
+  /**
+   * Builds an invocation of the escrow contract's `raise_dispute` method.
+   */
+  static buildEscrowRaiseDispute(
+    escrowContractId: string,
+    escrowId: string | bigint,
+    caller: string
+  ): xdr.Operation {
+    return Operation.invokeContractFunction({
+      contract: escrowContractId,
+      function: "raise_dispute",
+      args: [
+        nativeToScVal(BigInt(escrowId), { type: "u64" }),
+        new Address(caller).toScVal(),
+      ],
+    });
+  }
+
+  /**
+   * Builds an invocation of the escrow contract's `arbitrate` method.
+   *
+   * @param releaseToRecipient When true the arbiter releases funds to the
+   *   recipient; when false the funds are refunded to the depositor.
+   */
+  static buildEscrowArbitrate(
+    escrowContractId: string,
+    escrowId: string | bigint,
+    arbiter: string,
+    releaseToRecipient: boolean
+  ): xdr.Operation {
+    return Operation.invokeContractFunction({
+      contract: escrowContractId,
+      function: "arbitrate",
+      args: [
+        nativeToScVal(BigInt(escrowId), { type: "u64" }),
+        new Address(arbiter).toScVal(),
+        nativeToScVal(releaseToRecipient, { type: "bool" }),
       ],
     });
   }
