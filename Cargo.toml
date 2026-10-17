@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
   "contracts/event-schema",
+  "contracts/sbt-identity",
   "contracts/smart-account",
 ]
 

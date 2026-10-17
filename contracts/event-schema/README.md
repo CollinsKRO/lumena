@@ -24,3 +24,5 @@ this layout.
 | Contract        | Action     | Wallet topic        | Payload (`ScVal`)                                                  |
 | --------------- | ---------- | ------------------- | ------------------------------------------------------------------ |
 | `smart_account` | `transfer` | Smart account       | `ScvVec[token: ScvAddress, to: ScvAddress, amount: ScvI128]`       |
+| `sbt_identity`  | `mint`     | Credential holder   | `ScvVec[issuer: ScvAddress, expires_at: ScvU64]`                   |
+| `sbt_identity`  | `revoke`   | Credential holder   | `issuer: ScvAddress`                                               |
