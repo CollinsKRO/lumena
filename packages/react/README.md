@@ -159,6 +159,86 @@ await sendPayment({
 });
 ```
 
+### `useSessionKeyManager()`
+
+Manages temporary session keys, tracking their time-to-live countdown, remaining spending quota, and providing instant revocation.
+
+```tsx
+const {
+  sessionKeys,
+  timeToLive,
+  remainingQuota,
+  revoke,
+  loading,
+  error,
+} = useSessionKeyManager(walletId);
+
+// timeToLive updates every second (in seconds)
+// remainingQuota reflects the remaining spending budget for the active key
+
+// Revoke a session key: removes the multisig signer / on-chain delegation
+// via a co-signed transaction.
+await revoke(sessionKeyAddress);
+```
+
+## Components
+
+### `LumenQrScanner`
+
+A camera-based QR scanner for destination addresses and SEP-0007 transaction URIs. It uses an HTML5 video stream, supports switching between cameras, and includes a flash toggle for devices that expose a torch.
+
+```tsx
+import { LumenQrScanner } from "@lumen/react";
+
+<LumenQrScanner
+  onScan={(result) => {
+    // result.address: the parsed Stellar public key
+    // result.uri: the raw scanned value
+    // result.sep0007: parsed SEP-0007 payload when a web+stellar:pay link is scanned
+    console.log(result);
+  }}
+  onError={(error) => console.error(error)}
+/>;
+```
+
+The scanner parses standard Stellar public keys (`G...`) and `web+stellar:pay` links. When a valid code is detected, `onScan(result)` is invoked; camera or permission failures are reported through `onError`.
+
+### `LumenThemeProvider`
+
+Provides design tokens and dark/light/system theming to all prebuilt Lumen components without CSS conflicts.
+
+```tsx
+import { LumenThemeProvider } from "@lumen/react";
+
+<LumenThemeProvider mode="system">
+  <App />
+</LumenThemeProvider>;
+```
+
+`mode` accepts `"dark"`, `"light"`, or `"system"` (follows the OS preference). Changing the mode dynamically updates colors across all prebuilt Lumen components.
+
+Tokens are exposed as CSS variables and can be overridden to match host branding:
+
+- `--lumen-primary`
+- `--lumen-bg`
+- `--lumen-card-bg`
+- `--lumen-radius`
+
+## Next.js App Router (RSC) Compatibility
+
+`@lumen/react` is compatible with the Next.js 14+ App Router. All React entrypoints and interactive components include the `"use client"` directive, so they can be imported directly into client components without hydration mismatches.
+
+For React Server Components, a server-safe mock provider is available so that server rendering does not attempt to access browser globals:
+
+```tsx
+import { LumenServerProvider } from "@lumen/react";
+
+// Safe to use in a React Server Component
+<LumenServerProvider>
+  <App />
+</LumenServerProvider>;
+```
+
 ## Development
 
 You can work on `@lumen/react` independently without running the full monorepo suite.

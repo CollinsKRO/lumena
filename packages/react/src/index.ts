@@ -1,5 +1,11 @@
-export { LumenProvider, useLumen } from "./context.js";
-export type { LumenContextValue, LumenProviderProps } from "./context.js";
+"use client";
+
+export { LumenProvider, useLumen, LumenServerProvider } from "./context.js";
+export type {
+  LumenContextValue,
+  LumenProviderProps,
+  LumenServerProviderProps,
+} from "./context.js";
 
 export { useIsMounted } from "./hooks/use-is-mounted.js";
 
@@ -45,6 +51,14 @@ export type { Transaction, UseTransactionHistoryResult } from "./use-transaction
 export { useSessionKey } from "./use-session-key.js";
 export type { SessionKeyState } from "./use-session-key.js";
 
+// #269 — Session key manager with TTL countdown, scoped limits, and revocation
+export { useSessionKeyManager } from "./use-session-key-manager.js";
+export type {
+  ManagedSessionKey,
+  UseSessionKeyManagerOptions,
+  UseSessionKeyManagerResult,
+} from "./use-session-key-manager.js";
+
 // #279 — Multi-device co-signing sessions
 export { useMultiSigApproval } from "./use-multisig-approval.js";
 export type {
@@ -57,6 +71,15 @@ export type {
 // #281 — i18n framework
 export { useTranslation, resolveTranslations, translations } from "./i18n/index.js";
 export type { LumenLocale, LumenTranslations, LumenI18nContextValue } from "./i18n/index.js";
+
+// #268 — Design tokens and dark/light theme provider
+export { LumenThemeProvider, useLumenTheme } from "./theme/index.js";
+export type {
+  LumenThemeMode,
+  LumenThemeTokens,
+  LumenThemeContextValue,
+  LumenThemeProviderProps,
+} from "./theme/index.js";
 
 export { LumenBalance } from "./components/LumenBalance.js";
 export type { LumenBalanceProps } from "./components/LumenBalance.js";
@@ -71,6 +94,14 @@ export type {
   LumenConnectModalTab,
   LumenConnectModalTheme,
 } from "./components/LumenConnectModal.js";
+
+// #266 — QR scanner with camera access, flash toggle, and URI parsing
+export { LumenQrScanner } from "./components/LumenQrScanner.js";
+export type {
+  LumenQrScannerProps,
+  LumenQrScanResult,
+  LumenQrScanResultType,
+} from "./components/LumenQrScanner.js";
 
 // #276 — Error boundary with sanitized diagnostics export
 export { LumenErrorBoundary } from "./components/LumenErrorBoundary.js";
