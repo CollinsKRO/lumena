@@ -169,14 +169,11 @@ export {
 } from './stream.js';
 
 export {
-  Sep38Client,
-  computeConversion,
-  type Sep38Price,
-  type Sep38IndicativeQuote,
-  type Sep38FirmQuote,
-  type Sep38QuoteRequest,
-  type Sep38ClientOpts,
-} from './sep38.js';
+  encodeXdrToUrFrames,
+  decodeUrFrames,
+  type UrFrame,
+  type AirgapOptions,
+} from './airgap.js';
 
 export interface SponsoredAccountResult {
   publicKey: string;
