@@ -1,0 +1,28 @@
+# Reproducible build of size-optimized Soroban contract WASM binaries.
+#
+#   docker build -f docker/Dockerfile.soroban --output type=local,dest=artifacts/wasm .
+FROM rust:1.81-slim AS build
+
+ARG BINARYEN_VERSION=116
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl ca-certificates make \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN curl -sSL "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/binaryen-version_${BINARYEN_VERSION}-x86_64-linux.tar.gz" -o /tmp/binaryen.tar.gz \
+  && tar -xzf /tmp/binaryen.tar.gz -C /tmp \
+  && cp "/tmp/binaryen-version_${BINARYEN_VERSION}/bin/wasm-opt" /usr/local/bin/wasm-opt \
+  && rm -rf /tmp/binaryen*
+
+RUN rustup target add wasm32-unknown-unknown
+
+WORKDIR /workspace
+
+COPY Cargo.toml ./
+COPY contracts ./contracts
+
+RUN make -C contracts optimize
+
+FROM scratch AS artifacts
+
+COPY --from=build /workspace/target/optimized/ /

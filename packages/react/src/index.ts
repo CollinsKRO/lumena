@@ -25,6 +25,14 @@ export type {
   UseSendPaymentResult,
 } from "./use-send-payment.js";
 
+// #262 — Gasless payments with optimistic balance updates and auto-rollback
+export { useGaslessTransaction } from "./use-gasless-transaction.js";
+export type {
+  GaslessTransactionParams,
+  GaslessTransactionResult,
+  UseGaslessTransactionResult,
+} from "./use-gasless-transaction.js";
+
 export { usePolicy } from "./use-policy.js";
 export type { UsePolicyResult, WalletPolicy } from "./use-policy.js";
 
@@ -42,11 +50,30 @@ export type {
   UseInvokeContractResult,
 } from "./use-invoke-contract.js";
 
+export { useSorobanContract } from "./use-soroban-contract.js";
+export type {
+  SorobanContractMethod,
+  SorobanContractSpec,
+  SorobanContractSpecDefinition,
+  SorobanSimulation,
+  UseSorobanContractOptions,
+  UseSorobanContractResult,
+} from "./use-soroban-contract.js";
+
 export { useTrustline } from "./use-trustline.js";
 export type { UseTrustlineResult } from "./use-trustline.js";
 
 export { useTransactionHistory } from "./use-transaction-history.js";
 export type { Transaction, UseTransactionHistoryResult } from "./use-transaction-history.js";
+
+// #264 — SEP-41 token allowance query and approval hooks
+export { useTokenAllowance, useApproveToken } from "./use-token-allowance.js";
+export type {
+  TokenAllowance,
+  UseTokenAllowanceResult,
+  ApproveTokenResult,
+  UseApproveTokenResult,
+} from "./use-token-allowance.js";
 
 export { useSessionKey } from "./use-session-key.js";
 export type { SessionKeyState } from "./use-session-key.js";
@@ -67,6 +94,14 @@ export type {
   UseMultiSigApprovalOptions,
   UseMultiSigApprovalResult,
 } from "./use-multisig-approval.js";
+
+// #273 — Network health monitor with RPC latency ping and failover alerting
+export { useNetworkHealth } from "./use-network-health.js";
+export type {
+  NetworkHealthStatus,
+  UseNetworkHealthOptions,
+  UseNetworkHealthResult,
+} from "./use-network-health.js";
 
 // #281 — i18n framework
 export { useTranslation, resolveTranslations, translations } from "./i18n/index.js";
@@ -95,6 +130,8 @@ export type {
   LumenConnectModalTheme,
 } from "./components/LumenConnectModal.js";
 
+export { LumenSwapWidget } from "./components/LumenSwapWidget.js";
+export type { LumenSwapWidgetProps } from "./components/LumenSwapWidget.js";
 // #266 — QR scanner with camera access, flash toggle, and URI parsing
 export { LumenQrScanner } from "./components/LumenQrScanner.js";
 export type {

@@ -1,4 +1,4 @@
-import { Keypair, Asset, TransactionBuilder } from "@stellar/stellar-sdk";
+import { Keypair, Asset, TransactionBuilder, Address, xdr, scValToNative } from "@stellar/stellar-sdk";
 import {
   StellarClient,
   Wallet,
@@ -394,6 +394,43 @@ export class LumenClient {
     }
 
     return wallet.changeTrust(asset, limit);
+  }
+
+  /** Returns the sequence number of the latest ledger known to Soroban RPC. */
+  async getLatestLedger(): Promise<number> {
+    const { sequence } = await this.client.rpc.getLatestLedger();
+    return sequence;
+  }
+
+  /**
+   * Reads the expiration ledger of a SEP-41 token allowance from the token
+   * contract's temporary storage. Returns `null` when no allowance entry exists.
+   */
+  async getAllowanceExpirationLedger(
+    tokenAddress: string,
+    from: string,
+    spender: string,
+  ): Promise<number | null> {
+    const key = xdr.LedgerKey.contractData(
+      new xdr.LedgerKeyContractData({
+        contract: new Address(tokenAddress).toScAddress(),
+        key: xdr.ScVal.scvVec([
+          xdr.ScVal.scvSymbol("Allowance"),
+          xdr.ScVal.scvMap([
+            new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol("from"), val: new Address(from).toScVal() }),
+            new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol("spender"), val: new Address(spender).toScVal() }),
+          ]),
+        ]),
+        durability: xdr.ContractDataDurability.temporary(),
+      }),
+    );
+
+    const { entries } = await this.client.rpc.getLedgerEntries(key);
+    const entry = entries[0];
+    if (!entry) return null;
+
+    const value = scValToNative(entry.val.contractData().val()) as { expiration_ledger?: number };
+    return value.expiration_ledger ?? null;
   }
 
   /**
