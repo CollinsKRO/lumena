@@ -25,6 +25,14 @@ export type {
   UseSendPaymentResult,
 } from "./use-send-payment.js";
 
+// #262 — Gasless payments with optimistic balance updates and auto-rollback
+export { useGaslessTransaction } from "./use-gasless-transaction.js";
+export type {
+  GaslessTransactionParams,
+  GaslessTransactionResult,
+  UseGaslessTransactionResult,
+} from "./use-gasless-transaction.js";
+
 export { usePolicy } from "./use-policy.js";
 export type { UsePolicyResult, WalletPolicy } from "./use-policy.js";
 
