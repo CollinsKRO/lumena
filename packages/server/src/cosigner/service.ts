@@ -31,6 +31,7 @@ export interface CosignResult {
   approved: boolean;
   reason?: string;
   code?: string;
+  rulesEvaluated?: string[];
 }
 
 export interface BatchCosignItemResult {
@@ -39,6 +40,7 @@ export interface BatchCosignItemResult {
   approved: boolean;
   reason?: string;
   code?: string;
+  rulesEvaluated?: string[];
 }
 
 export interface BatchCosignResult {
@@ -164,7 +166,7 @@ export class CosignerService {
       }
     }
 
-    const policyResult = await this.policyEngine.evaluate({
+    const policyResult = await this.policyEngine.evaluateWithAudit({
       walletAddress: request.walletAddress,
       transaction: tx,
     });
@@ -184,6 +186,7 @@ export class CosignerService {
         signedXdr: "",
         approved: false,
         reason: policyResult.reason,
+        rulesEvaluated: policyResult.rulesEvaluated,
       };
     }
 
@@ -216,6 +219,7 @@ export class CosignerService {
     return {
       signedXdr: tx.toXDR(),
       approved: true,
+      rulesEvaluated: policyResult.rulesEvaluated,
     };
   }
 
@@ -239,11 +243,16 @@ export class CosignerService {
           approved: false,
           reason: outcome.reason,
           code: outcome.code,
+          rulesEvaluated: outcome.rulesEvaluated,
         });
         continue;
       }
 
-      results.push({ index, approved: true });
+      results.push({
+        index,
+        approved: true,
+        rulesEvaluated: outcome.rulesEvaluated,
+      });
       signable.push({
         index,
         tx: outcome.tx,
@@ -296,8 +305,8 @@ export class CosignerService {
   private async evaluateForBatch(
     request: CosignRequest
   ): Promise<
-    | { approved: true; tx: Transaction; txHash: Buffer }
-    | { approved: false; reason?: string; code?: string }
+    | { approved: true; tx: Transaction; txHash: Buffer; rulesEvaluated: string[] }
+    | { approved: false; reason?: string; code?: string; rulesEvaluated?: string[] }
   > {
     let parsed;
     try {
@@ -389,7 +398,7 @@ export class CosignerService {
       }
     }
 
-    const policyResult = await this.policyEngine.evaluate({
+    const policyResult = await this.policyEngine.evaluateWithAudit({
       walletAddress: request.walletAddress,
       transaction: tx,
     });
@@ -405,9 +414,13 @@ export class CosignerService {
           .catch(() => {});
       }
 
-      return { approved: false, reason: policyResult.reason };
+      return {
+        approved: false,
+        reason: policyResult.reason,
+        rulesEvaluated: policyResult.rulesEvaluated,
+      };
     }
 
-    return { approved: true, tx, txHash };
+    return { approved: true, tx, txHash, rulesEvaluated: policyResult.rulesEvaluated };
   }
 }

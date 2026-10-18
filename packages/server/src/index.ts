@@ -30,6 +30,12 @@ export {
   type IdempotencyMiddlewareOpts,
 } from "./middleware/idempotency.js";
 export {
+  createAntiReplayMiddleware,
+  type AntiReplayOptions,
+  type AntiReplayRedisClient,
+} from "./middleware/anti-replay.js";
+export { MerkleAuditLog, type AuditDecision, type AuditRecord } from "./audit/merkle-log.js";
+export {
   rbacMiddleware,
   requirePermission,
   hasPermission,
