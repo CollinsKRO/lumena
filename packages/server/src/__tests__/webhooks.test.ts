@@ -101,6 +101,61 @@ describe("Webhooks API & Server Integration", () => {
     vi.restoreAllMocks();
   });
 
+  it("returns delivery history for a specific webhook via GET /webhooks/:id/deliveries", async () => {
+    const history = [
+      {
+        deliveryId: "delivery-2",
+        event: "policy.violated" as const,
+        timestamp: "2026-09-25T13:00:00.000Z",
+        deliveredAt: null,
+        webhookId: "wh-2",
+        url: "https://example.com/webhook",
+        success: false,
+        statusCode: 500,
+        attempts: 5,
+        error: "HTTP 500",
+        data: { reason: "policy" },
+      },
+    ];
+    const historySpy = vi
+      .spyOn(serverResult.webhookDispatcher, "getDeliveryLog")
+      .mockResolvedValue(history);
+
+    const response = await fetch(`${BASE_URL}/webhooks/wh-2/deliveries`);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(history);
+    expect(historySpy).toHaveBeenCalledWith("wh-2");
+    vi.restoreAllMocks();
+  });
+
+  it("re-enqueues a dead-lettered delivery via POST /webhooks/deliveries/:id/retry", async () => {
+    const retrySpy = vi
+      .spyOn(serverResult.webhookDispatcher, "retryDelivery")
+      .mockResolvedValue(true);
+
+    const response = await fetch(`${BASE_URL}/webhooks/deliveries/delivery-2/retry`, {
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.retried).toBe(true);
+    expect(retrySpy).toHaveBeenCalledWith("delivery-2");
+    vi.restoreAllMocks();
+  });
+
+  it("returns 404 when retrying an unknown delivery", async () => {
+    vi.spyOn(serverResult.webhookDispatcher, "retryDelivery").mockResolvedValue(false);
+
+    const response = await fetch(`${BASE_URL}/webhooks/deliveries/missing/retry`, {
+      method: "POST",
+    });
+
+    expect(response.status).toBe(404);
+    vi.restoreAllMocks();
+  });
+
   it("denies PATCH /webhooks to auditor and operator roles and logs the attempt", async () => {
     const auditorToken = signTestToken({ sub: "auditor-1", roles: ["auditor"] });
     const operatorToken = signTestToken({ sub: "operator-1", roles: ["operator"] });

@@ -4,6 +4,7 @@ import { validateTimeBounds, type StellarClient } from "@lumen/core";
 import type { PolicyEngine } from "../policy/engine.js";
 import type { WebhookDispatcher } from "../webhook/dispatcher.js";
 import { trackOperation } from "../lifecycle.js";
+import type { SequenceAllocator } from "../fee-sponsor/sequence-allocator.js";
 
 export interface CosignerOpts {
   client: StellarClient;
@@ -15,7 +16,22 @@ export interface CosignerOpts {
   webhookDispatcher?: WebhookDispatcher;
   /** Optional real-time fraud/anomaly detector. */
   fraudDetector?: FraudDetector;
+  /**
+   * Optional distributed sequence number allocator. When provided, the
+   * co-signer reserves a sequence number for the sponsor account before
+   * signing and retries submission with exponential backoff on
+   * `txBAD_SEQ` collisions.
+   */
+  sequenceAllocator?: SequenceAllocator;
+  /** Max retry attempts on `txBAD_SEQ` collisions. Defaults to 5. */
+  maxSequenceRetries?: number;
+  /** Base delay (ms) for exponential backoff. Defaults to 100. */
+  sequenceRetryBaseDelayMs?: number;
 }
+
+/** Horizon result code indicating a sequence number collision. */
+const TX_BAD_SEQ = "txBAD_SEQ";
+=======
 
 export interface CosignRequest {
   xdr: string;
@@ -54,6 +70,9 @@ export class CosignerService {
   private maxValidityWindowSeconds?: number;
   private webhookDispatcher?: WebhookDispatcher;
   private fraudDetector?: FraudDetector;
+  private sequenceAllocator?: SequenceAllocator;
+  private maxSequenceRetries: number;
+  private sequenceRetryBaseDelayMs: number;
 
   constructor(opts: CosignerOpts) {
     this.client = opts.client;
@@ -63,6 +82,9 @@ export class CosignerService {
     this.maxValidityWindowSeconds = opts.maxValidityWindowSeconds;
     this.webhookDispatcher = opts.webhookDispatcher;
     this.fraudDetector = opts.fraudDetector;
+    this.sequenceAllocator = opts.sequenceAllocator;
+    this.maxSequenceRetries = opts.maxSequenceRetries ?? 5;
+    this.sequenceRetryBaseDelayMs = opts.sequenceRetryBaseDelayMs ?? 100;
   }
 
   get publicKey(): string {
@@ -187,6 +209,10 @@ export class CosignerService {
       };
     }
 
+    // Reserve a sequence number for the sponsor account when the transaction
+    // is sourced from the sponsor (i.e. the co-signer is the fee sponsor).
+    await this.reserveSequenceIfNeeded(tx);
+
     // Sign using the abstracted Signer (KMS or env-keypair).
     const signature = await this.signer.sign(txHash);
 
@@ -217,6 +243,78 @@ export class CosignerService {
       signedXdr: tx.toXDR(),
       approved: true,
     };
+  }
+
+  /**
+   * Reserves a sequence number from the distributed allocator when the
+   * transaction's source is the sponsor account. No-op when no allocator is
+   * configured or the transaction is sourced from the wallet.
+   */
+  private async reserveSequenceIfNeeded(tx: Transaction): Promise<void> {
+    if (!this.sequenceAllocator) {
+      return;
+    }
+    if (tx.source !== this.signer.publicKey()) {
+      return;
+    }
+    const reserved = await this.sequenceAllocator.reserve(tx.source);
+    tx.sequence = reserved.sequence.toString();
+  }
+
+  /**
+   * Submits a signed transaction XDR to Horizon, retrying with exponential
+   * backoff when Horizon reports a `txBAD_SEQ` sequence collision. On each
+   * collision a fresh sequence number is reserved (when an allocator is
+   * configured) and the transaction is re-signed before retrying.
+   */
+  async submitWithSequenceRetry(
+    signedXdr: string,
+    resign?: (tx: Transaction) => Promise<string>
+  ): Promise<{ hash: string; status: string }> {
+    let currentXdr = signedXdr;
+    let attempt = 0;
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      try {
+        return await this.client.submitTransaction(currentXdr);
+      } catch (err) {
+        const isSeqCollision = this.isSequenceCollision(err);
+        if (!isSeqCollision || attempt >= this.maxSequenceRetries) {
+          throw err;
+        }
+
+        attempt += 1;
+        const delay = this.sequenceRetryBaseDelayMs * 2 ** (attempt - 1);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+
+        if (resign) {
+          const parsed = TransactionBuilder.fromXDR(
+            currentXdr,
+            this.client.networkPassphrase
+          );
+          if (parsed instanceof Transaction) {
+            await this.reserveSequenceIfNeeded(parsed);
+            currentXdr = await resign(parsed);
+          }
+        }
+      }
+    }
+  }
+
+  private isSequenceCollision(err: unknown): boolean {
+    if (!err || typeof err !== "object") {
+      return false;
+    }
+    const anyErr = err as {
+      message?: string;
+      response?: { data?: { extras?: { result_codes?: { transaction?: string } } } };
+    };
+    const txCode = anyErr.response?.data?.extras?.result_codes?.transaction;
+    if (txCode === TX_BAD_SEQ) {
+      return true;
+    }
+    return typeof anyErr.message === "string" && anyErr.message.includes(TX_BAD_SEQ);
   }
 
   /**
@@ -254,6 +352,7 @@ export class CosignerService {
     // Atomic signing step: only reached once every item has been evaluated.
     for (const item of signable) {
       try {
+        await this.reserveSequenceIfNeeded(item.tx);
         const signature = await this.signer.sign(item.txHash);
         const rawPublicKey = Keypair.fromPublicKey(
           this.signer.publicKey()
