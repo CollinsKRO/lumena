@@ -1,6 +1,9 @@
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import cors, { type CorsOptions } from "cors";
 import { createHash } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   createServer as createHttpServer,
   type Server as HttpServer,
@@ -234,6 +237,33 @@ function getTransactionHash(xdr: string, networkPassphrase: string): string {
   } catch {
     return envelopeHash;
   }
+}
+
+function getPackageVersion(): string {
+  try {
+    const currentDir = path.dirname(fileURLToPath(import.meta.url));
+    const candidatePaths = [
+      path.resolve(currentDir, "../package.json"),
+      path.resolve(currentDir, "../../package.json"),
+      path.resolve(process.cwd(), "package.json"),
+      path.resolve(process.cwd(), "packages/server/package.json"),
+    ];
+    for (const p of candidatePaths) {
+      if (fs.existsSync(p)) {
+        try {
+          const pkg = JSON.parse(fs.readFileSync(p, "utf-8")) as { name?: string; version?: string };
+          if (pkg.name === "@lumen/server" && typeof pkg.version === "string") {
+            return pkg.version;
+          }
+        } catch {
+          // ignore parsing error and continue
+        }
+      }
+    }
+  } catch {
+    // fallback
+  }
+  return process.env.npm_package_version || "0.1.0";
 }
 
 /** Creates the Lumen API server, service graph, and policy engine. */
@@ -471,7 +501,7 @@ return 1
         horizonConnected,
         dependencies,
         network: client.config.network,
-        version: "0.1.0",
+        version: getPackageVersion(),
       });
     }),
   );
