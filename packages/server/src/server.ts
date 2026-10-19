@@ -615,6 +615,7 @@ return 1
     if (!policy) {
       throw new PolicyError("No policy found", 404);
     }
+    res.setHeader("ETag", `"${policy.version}"`);
     res.json(policy);
   });
 
@@ -637,6 +638,7 @@ return 1
         walletId: parsed.data.walletId,
         rules: parsed.data.rules,
         createdAt: new Date(),
+        version: 1,
       };
 
       policyEngine.addPolicy(policy);
@@ -664,12 +666,33 @@ return 1
         throw new PolicyError("No policy found", 404);
       }
 
+      // #366 — optimistic concurrency control via If-Match / ETag.
+      const ifMatch = req.headers["if-match"];
+      const ifMatchValue = Array.isArray(ifMatch) ? ifMatch[0] : ifMatch;
+      if (ifMatchValue === undefined || ifMatchValue.trim() === "") {
+        throw new PolicyError(
+          "If-Match header is required to update a policy",
+          412,
+        );
+      }
+
+      const normalized = ifMatchValue.trim().replace(/^W\//, "").replace(/^"(.*)"$/, "$1");
+      const expectedVersion = Number(normalized);
+      if (!Number.isInteger(expectedVersion) || expectedVersion !== existingPolicy.version) {
+        throw new PolicyError(
+          `Policy version mismatch: expected version ${existingPolicy.version}`,
+          412,
+        );
+      }
+
       const policy = {
         ...existingPolicy,
         rules: parsed.data.rules,
+        version: existingPolicy.version + 1,
       };
 
       policyEngine.addPolicy(policy);
+      res.setHeader("ETag", `"${policy.version}"`);
       res.json(policy);
     }),
   );

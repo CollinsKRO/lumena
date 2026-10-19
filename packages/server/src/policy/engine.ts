@@ -68,6 +68,8 @@ export class PolicyEngine {
   }
 
   addPolicy(policy: Policy): void {
+    // Store the policy as-is so that the `version` field (used for ETag-based
+    // optimistic concurrency control in the server) is preserved unchanged.
     this.policies.set(policy.walletId, policy);
   }
 
@@ -103,6 +105,12 @@ export class PolicyEngine {
     this.sessionSpendTracking.clear();
   }
 
+  /**
+   * Return the stored policy for a wallet, including its `version` field.
+   *
+   * The server uses this to compare the stored version against the
+   * `If-Match` header on PUT /policy/:walletId.
+   */
   getPolicy(walletId: string): Policy | null {
     return this.policies.get(walletId) ?? null;
   }
