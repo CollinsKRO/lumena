@@ -1,5 +1,6 @@
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import cors, { type CorsOptions } from "cors";
+import { createHash } from "node:crypto";
 import {
   createServer as createHttpServer,
   type Server as HttpServer,
@@ -7,7 +8,7 @@ import {
   type IncomingMessage,
 } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
-import { Keypair, StrKey } from "@stellar/stellar-sdk";
+import { Keypair, StrKey, Transaction, TransactionBuilder } from "@stellar/stellar-sdk";
 import { StellarClient } from "@lumen/core";
 import type { Signer } from "@lumen/types";
 import type { WalletRegistry } from "@lumen/core";
@@ -22,6 +23,7 @@ import {
   type TokenBucketConfig,
 } from "./middleware/rate-limiter.js";
 import { createIdempotencyMiddleware } from "./middleware/idempotency.js";
+import { createAntiReplayMiddleware } from "./middleware/anti-replay.js";
 import { createRbacMiddleware, type RbacConfig } from "./middleware/rbac.js";
 import {
   CosignRequestSchema,
@@ -45,6 +47,7 @@ import {
 import { SponsorMonitorService } from "./fee-sponsor/monitor.js";
 import { WebhookDispatcher } from "./webhook/dispatcher.js";
 import { createGraphQLGateway } from "./graphql/index.js";
+import { MerkleAuditLog, parseAuditRecord } from "./audit/merkle-log.js";
 
 /** A single policy decision broadcast on the audit stream. */
 export interface AuditEvent {
@@ -82,6 +85,8 @@ export interface ServerResult {
   auditWebSocketServer: WebSocketServer;
   /** Broadcasts a policy decision to all connected audit stream clients. */
   broadcastAuditEvent: (event: AuditEvent) => void;
+  /** Hash-chained audit decisions and Merkle-root verification. */
+  auditLog: MerkleAuditLog;
   /**
    * Stops accepting new connections and drains in-flight requests.
    * Resolves once the HTTP server has closed (or the grace period elapses).
@@ -132,6 +137,8 @@ export interface ServerOpts {
    * Cross-origin access is disabled by default.
    */
   cors?: CorsOptions;
+  /** Loads the current allowlist of CORS origins; refreshed every 60 seconds. */
+  corsOriginProvider?: () => Promise<string[]>;
   /**
    * Optional PolicyEngine instance.
    */
@@ -175,6 +182,8 @@ export interface ServerOpts {
    * idempotency middleware. When omitted, an in-memory fallback is used.
    */
   redis?: Redis;
+  /** Optional publisher for hourly Merkle roots; Redis stores roots by default when configured. */
+  publishAuditRoot?: (root: string, timestamp: string) => Promise<void>;
   /**
    * Token bucket configuration for per-client-IP rate limiting.
    * `capacity` is the maximum burst size; `refillRate` is the steady-state
@@ -194,6 +203,16 @@ export interface ServerOpts {
    * Defaults to 15000.
    */
   shutdownGracePeriodMs?: number;
+}
+
+function getTransactionHash(xdr: string, networkPassphrase: string): string {
+  const envelopeHash = createHash("sha256").update(xdr).digest("hex");
+  try {
+    const transaction = TransactionBuilder.fromXDR(xdr, networkPassphrase);
+    return transaction instanceof Transaction ? transaction.hash().toString("hex") : envelopeHash;
+  } catch {
+    return envelopeHash;
+  }
 }
 
 /** Creates the Lumen API server, service graph, and policy engine. */
@@ -251,7 +270,84 @@ export function createServer(opts: ServerOpts): ServerResult {
   });
   app.use(express.json());
 
-  const corsOptions: CorsOptions = opts.cors ?? { origin: false };
+  const redis = opts.redis;
+  const appendAuditRecordScript = `
+local previous = redis.call('LINDEX', KEYS[1], -1)
+if previous then
+  if cjson.decode(previous)['hash'] ~= ARGV[1] then return 0 end
+elseif ARGV[1] ~= '' then
+  return 0
+end
+redis.call('RPUSH', KEYS[1], ARGV[2])
+return 1
+`;
+  const auditLog = new MerkleAuditLog(
+    redis
+      ? {
+          load: async () =>
+            (await redis.lrange("lumen:audit:records", 0, -1)).map(parseAuditRecord),
+          append: async (record) => {
+            const result = await redis.eval(
+              appendAuditRecordScript,
+              1,
+              "lumen:audit:records",
+              record.prevHash,
+              JSON.stringify(record),
+            );
+            return result === 1;
+          },
+        }
+      : undefined,
+  );
+  void auditLog.ready().catch((error: unknown) => {
+    logger.error({ error }, "Failed to load or verify stored audit log");
+  });
+  const corsOriginProvider =
+    opts.corsOriginProvider ?? (redis ? () => redis.smembers("lumen:cors:origins") : undefined);
+  let corsOriginCache: { origins: string[]; expiresAt: number } | undefined;
+  const corsOptions: CorsOptions = corsOriginProvider
+    ? {
+        ...opts.cors,
+        origin: (origin, callback) => {
+          if (!origin) {
+            callback(null, true);
+            return;
+          }
+
+          const resolveOrigins = async (): Promise<string[]> => {
+            if (!corsOriginCache || corsOriginCache.expiresAt <= Date.now()) {
+              const origins = await corsOriginProvider();
+              corsOriginCache = { origins, expiresAt: Date.now() + 60_000 };
+            }
+            return corsOriginCache.origins;
+          };
+
+          void resolveOrigins()
+            .then((origins) => {
+              const requestOrigin = new URL(origin).origin.toLowerCase();
+              const hostname = new URL(origin).hostname.toLowerCase();
+              const allowed = origins.some((entry) => {
+                const normalized = entry.trim().toLowerCase();
+                if (normalized.startsWith("*.")) {
+                  const suffix = normalized.slice(1);
+                  return hostname.endsWith(suffix) && hostname !== suffix.slice(1);
+                }
+                try {
+                  return normalized.includes("://")
+                    ? new URL(normalized).origin === requestOrigin
+                    : hostname === normalized;
+                } catch {
+                  return false;
+                }
+              });
+              callback(allowed ? null : new Error("Origin is not allowed by CORS"), allowed);
+            })
+            .catch((error: unknown) =>
+              callback(error instanceof Error ? error : new Error(String(error))),
+            );
+        },
+      }
+    : (opts.cors ?? { origin: false });
   app.use(cors(corsOptions));
 
   app.use((req: Request, res: Response, next: NextFunction) => {
@@ -307,6 +403,10 @@ export function createServer(opts: ServerOpts): ServerResult {
   });
 
   const idempotency = createIdempotencyMiddleware({ redis: opts.redis });
+  const antiReplay = createAntiReplayMiddleware({
+    redis: opts.redis,
+    networkPassphrase: client.networkPassphrase,
+  });
   const rbac = createRbacMiddleware(opts.rbac);
 
   app.use("/docs", swaggerUi.serve, swaggerUi.setup(openApiSpec));
@@ -389,6 +489,7 @@ export function createServer(opts: ServerOpts): ServerResult {
   app.post(
     "/cosign",
     rateLimiter,
+    antiReplay,
     idempotency,
     wrapHandler(async (req: Request, res: Response) => {
       const timer = policyEvaluationDurationSeconds.startTimer();
@@ -400,6 +501,13 @@ export function createServer(opts: ServerOpts): ServerResult {
         }
 
         const result = await cosignerService.cosign(parsed.data);
+        const transactionHash = getTransactionHash(parsed.data.xdr, client.networkPassphrase);
+        await auditLog.append({
+          txHash: transactionHash,
+          walletAddress: parsed.data.walletAddress,
+          decision: result.approved ? "approved" : "rejected",
+          rulesEvaluated: result.rulesEvaluated ?? [],
+        });
 
         if (!result.approved) {
           cosignRequestsTotal.inc({ status: "rejected" });
@@ -435,6 +543,7 @@ export function createServer(opts: ServerOpts): ServerResult {
   app.post(
     "/cosign/batch",
     cosignFeeBumpLimiter,
+    antiReplay,
     wrapHandler(async (req: Request, res: Response) => {
       const parsed = CosignBatchRequestSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -442,6 +551,16 @@ export function createServer(opts: ServerOpts): ServerResult {
       }
 
       const results = await cosignerService.cosignBatch(parsed.data.transactions);
+      await Promise.all(
+        parsed.data.transactions.map((transaction, index) =>
+          auditLog.append({
+            txHash: getTransactionHash(transaction.xdr, client.networkPassphrase),
+            walletAddress: transaction.walletAddress,
+            decision: results[index]?.approved ? "approved" : "rejected",
+            rulesEvaluated: results[index]?.rulesEvaluated ?? [],
+          }),
+        ),
+      );
 
       const allApproved = results.every((r) => r.approved);
       if (allApproved) {
@@ -454,7 +573,8 @@ export function createServer(opts: ServerOpts): ServerResult {
         cosignRequestsTotal.inc({ status: "rejected" }, results.length - approvedCount);
       }
 
-      res.status(allApproved ? 200 : 207).json({ results });
+      const responseResults = results.map(({ rulesEvaluated: _rulesEvaluated, ...result }) => result);
+      res.status(allApproved ? 200 : 207).json({ results: responseResults });
     }),
   );
 
@@ -786,6 +906,32 @@ export function createServer(opts: ServerOpts): ServerResult {
     }
   };
 
+  const publishAuditRoot = async (): Promise<void> => {
+    await auditLog.ready();
+    const root = auditLog.merkleRoot();
+    if (!root) return;
+    const timestamp = new Date().toISOString();
+    if (opts.publishAuditRoot) {
+      await opts.publishAuditRoot(root, timestamp);
+    } else if (opts.redis) {
+      await opts.redis.set(
+        `lumen:audit:merkle:${timestamp.slice(0, 13)}`,
+        root,
+        "EX",
+        365 * 24 * 60 * 60,
+      );
+    }
+  };
+  const auditRootInterval =
+    opts.publishAuditRoot || opts.redis
+      ? setInterval(() => {
+          publishAuditRoot().catch((error: unknown) => {
+            logger.error({ error }, "Failed to publish audit Merkle root");
+          });
+        }, 60 * 60 * 1000)
+      : null;
+  auditRootInterval?.unref();
+
   auditWebSocketServer.on("connection", (socket: WebSocket) => {
     auditClients.add(socket);
     socket.on("close", () => {
@@ -822,6 +968,7 @@ export function createServer(opts: ServerOpts): ServerResult {
   const shutdown = (gracePeriodMs: number = opts.shutdownGracePeriodMs ?? 15000): Promise<void> => {
     sponsorMonitorService.stop();
     stellarRouter?.stop();
+    if (auditRootInterval) clearInterval(auditRootInterval);
 
     for (const socket of auditClients) {
       socket.close();
@@ -876,6 +1023,7 @@ export function createServer(opts: ServerOpts): ServerResult {
     webhookDispatcher,
     auditWebSocketServer,
     broadcastAuditEvent,
+    auditLog,
     shutdown,
   };
 }
