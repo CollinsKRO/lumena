@@ -7,7 +7,7 @@ import {
   type IncomingMessage,
 } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
-import { Keypair, StrKey } from "@stellar/stellar-sdk";
+import { Keypair, StrKey, Transaction, TransactionBuilder } from "@stellar/stellar-sdk";
 import { StellarClient } from "@lumen/core";
 import type { Signer } from "@lumen/types";
 import type { WalletRegistry } from "@lumen/core";
@@ -43,8 +43,11 @@ import {
 } from "./metrics.js";
 
 import { SponsorMonitorService } from "./fee-sponsor/monitor.js";
+import { SponsorRefillService } from "./fee-sponsor/refill.js";
+import { LedgerIngestionWorker, type LedgerTransactionUpdate } from "./ledger/ingest.js";
 import { WebhookDispatcher } from "./webhook/dispatcher.js";
 import { createGraphQLGateway } from "./graphql/index.js";
+import { createWalletWebSocketServer } from "./websocket/index.js";
 
 /** A single policy decision broadcast on the audit stream. */
 export interface AuditEvent {
@@ -76,12 +79,17 @@ export interface ServerResult {
   cosignerService: CosignerService;
   feeSponsorService: FeeSponsorService;
   sponsorMonitorService: SponsorMonitorService;
+  ledgerIngestionWorker?: LedgerIngestionWorker;
   policyEngine: PolicyEngine;
   webhookDispatcher: WebhookDispatcher;
   /** WebSocket server backing the real-time audit stream. */
   auditWebSocketServer: WebSocketServer;
+  /** Wallet event WebSocket backing the real-time wallet subscription stream. */
+  walletWebSocketServer: WebSocketServer;
   /** Broadcasts a policy decision to all connected audit stream clients. */
   broadcastAuditEvent: (event: AuditEvent) => void;
+  /** Broadcasts a wallet-scoped event to all subscribers for that wallet. */
+  broadcastWalletEvent: (walletAddress: string, event: string, payload?: Record<string, unknown>) => void;
   /**
    * Stops accepting new connections and drains in-flight requests.
    * Resolves once the HTTP server has closed (or the grace period elapses).
@@ -126,6 +134,12 @@ export interface ServerOpts {
   feePayerSigner: Signer;
   minSponsorBalance?: number;
   sponsorPollIntervalMs?: number;
+  /** Transfer XLM from a configured treasury when the sponsor balance is low. */
+  sponsorRefillTransfer?: (amountXlm: number) => Promise<void>;
+  sponsorTargetBalanceXlm?: number;
+  sponsorRefillCooldownMs?: number;
+  /** Persist finalized Horizon transaction status and actual charged fee. */
+  updateLedgerTransaction?: (update: LedgerTransactionUpdate) => Promise<void>;
   webhookDispatcher?: WebhookDispatcher;
   /**
    * Optional CORS configuration passed to the `cors` npm package.
@@ -237,12 +251,25 @@ export function createServer(opts: ServerOpts): ServerResult {
     webhookDispatcher,
   });
 
+  const sponsorRefillService = opts.sponsorRefillTransfer
+    ? new SponsorRefillService({
+        transfer: opts.sponsorRefillTransfer,
+        targetBalanceXlm: opts.sponsorTargetBalanceXlm ?? opts.minSponsorBalance ?? 50,
+        cooldownMs: opts.sponsorRefillCooldownMs,
+      })
+    : undefined;
+
   const sponsorMonitorService = new SponsorMonitorService({
     client,
     sponsorPublicKey: opts.feePayerSigner.publicKey(),
     minBalanceXlm: opts.minSponsorBalance,
     pollIntervalMs: opts.sponsorPollIntervalMs,
     webhookDispatcher,
+    onLowBalance: sponsorRefillService
+      ? async (balance, threshold) => {
+          await sponsorRefillService.refillIfLow(balance, threshold);
+        }
+      : undefined,
   });
 
   const app = express();
@@ -403,21 +430,33 @@ export function createServer(opts: ServerOpts): ServerResult {
 
         if (!result.approved) {
           cosignRequestsTotal.inc({ status: "rejected" });
+          const transaction = TransactionBuilder.fromXDR(parsed.data.xdr, client.networkPassphrase);
+          const txHash = transaction.hash().toString("hex");
           broadcastAuditEvent({
             timestamp: new Date().toISOString(),
             decision: "rejected",
-            wallet: parsed.data.walletId,
-            txHash: parsed.data.xdr ? undefined : undefined,
+            wallet: parsed.data.walletAddress,
+            txHash,
+            reason: result.reason ?? "Transaction denied by policy",
+          });
+          broadcastWalletEvent(parsed.data.walletAddress, "policy_violated", {
+            txHash,
             reason: result.reason ?? "Transaction denied by policy",
           });
           throw new PolicyError(result.reason ?? "Transaction denied by policy");
         }
 
         cosignRequestsTotal.inc({ status: "approved" });
+        const transaction = TransactionBuilder.fromXDR(parsed.data.xdr, client.networkPassphrase);
+        const txHash = transaction.hash().toString("hex");
         broadcastAuditEvent({
           timestamp: new Date().toISOString(),
           decision: "approved",
-          wallet: parsed.data.walletId,
+          wallet: parsed.data.walletAddress,
+          txHash,
+        });
+        broadcastWalletEvent(parsed.data.walletAddress, "cosigned", {
+          txHash,
         });
         res.json({ signedXdr: result.signedXdr });
       } catch (err) {
@@ -486,6 +525,13 @@ export function createServer(opts: ServerOpts): ServerResult {
       }
 
       const result = await feeSponsorService.submit(parsed.data.xdr);
+      const submittedTransaction = TransactionBuilder.fromXDR(
+        parsed.data.xdr,
+        client.networkPassphrase,
+      );
+      if (submittedTransaction instanceof Transaction) {
+        broadcastWalletEvent(submittedTransaction.source, "submitted", { hash: result.hash });
+      }
       res.json(result);
     }),
   );
@@ -776,6 +822,7 @@ export function createServer(opts: ServerOpts): ServerResult {
   // Real-time audit stream consumed by `lumen audit --follow`.
   const auditWebSocketServer = new WebSocketServer({ noServer: true });
   const auditClients = new Set<WebSocket>();
+  const walletWebSocketServer = createWalletWebSocketServer();
 
   const broadcastAuditEvent = (event: AuditEvent): void => {
     const payload = JSON.stringify(event);
@@ -785,6 +832,30 @@ export function createServer(opts: ServerOpts): ServerResult {
       }
     }
   };
+
+  const broadcastWalletEvent = (
+    walletAddress: string,
+    event: string,
+    payload: Record<string, unknown> = {},
+  ): void => {
+    walletWebSocketServer.broadcast(walletAddress, event, payload);
+  };
+
+  const ledgerIngestionWorker = opts.walletRegistry && opts.updateLedgerTransaction
+    ? new LedgerIngestionWorker({
+        client,
+        listWalletAddresses: async () => opts.walletRegistry!.list(),
+        updateTransaction: opts.updateLedgerTransaction,
+        onUpdate: (update) => {
+          broadcastWalletEvent(update.walletAddress, "confirmed", {
+            hash: update.hash,
+            status: update.status,
+            fee: update.fee,
+            ledger: update.ledger,
+          });
+        },
+      })
+    : undefined;
 
   auditWebSocketServer.on("connection", (socket: WebSocket) => {
     auditClients.add(socket);
@@ -798,14 +869,25 @@ export function createServer(opts: ServerOpts): ServerResult {
 
   server.on("upgrade", (req, socket, head) => {
     const pathname = (req.url ?? "").split("?")[0];
-    if (pathname !== "/audit/stream") {
-      socket.destroy();
+    if (pathname === "/audit/stream") {
+      auditWebSocketServer.handleUpgrade(req, socket, head, (ws) => {
+        auditWebSocketServer.emit("connection", ws, req);
+      });
       return;
     }
-    auditWebSocketServer.handleUpgrade(req, socket, head, (ws) => {
-      auditWebSocketServer.emit("connection", ws, req);
-    });
+
+    if (pathname === "/ws") {
+      walletWebSocketServer.server.handleUpgrade(req, socket, head, (ws) => {
+        walletWebSocketServer.server.emit("connection", ws, req);
+      });
+      return;
+    }
+
+    socket.destroy();
   });
+
+  sponsorMonitorService.start();
+  ledgerIngestionWorker?.start();
 
   server.listen(port, () => {
     logger.info({ port, network: client.config.network }, `Lumen server listening on port ${port}`);
@@ -821,12 +903,17 @@ export function createServer(opts: ServerOpts): ServerResult {
    */
   const shutdown = (gracePeriodMs: number = opts.shutdownGracePeriodMs ?? 15000): Promise<void> => {
     sponsorMonitorService.stop();
+    ledgerIngestionWorker?.stop();
     stellarRouter?.stop();
 
     for (const socket of auditClients) {
       socket.close();
     }
+    for (const socket of walletWebSocketServer.server.clients) {
+      socket.close();
+    }
     auditWebSocketServer.close();
+    walletWebSocketServer.server.close();
 
     return new Promise<void>((resolve) => {
       let settled = false;
@@ -872,10 +959,13 @@ export function createServer(opts: ServerOpts): ServerResult {
     cosignerService,
     feeSponsorService,
     sponsorMonitorService,
+    ledgerIngestionWorker,
     policyEngine,
     webhookDispatcher,
     auditWebSocketServer,
+    walletWebSocketServer: walletWebSocketServer.server,
     broadcastAuditEvent,
+    broadcastWalletEvent,
     shutdown,
   };
 }
