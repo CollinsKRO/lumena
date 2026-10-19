@@ -924,8 +924,21 @@ return 1
 
   app.get(
     "/webhooks/deliveries",
-    wrapHandler(async (_req: Request, res: Response) => {
-      res.json(await webhookDispatcher.getDeliveryLog());
+    wrapHandler(async (req: Request, res: Response) => {
+      const fullLog = await webhookDispatcher.getDeliveryLog();
+      const limitParam = req.query.limit;
+      const offsetParam = req.query.offset;
+
+      if (limitParam === undefined && offsetParam === undefined) {
+        res.json(fullLog);
+        return;
+      }
+
+      const limit = limitParam === undefined ? 50 : Math.max(1, Math.min(200, Number(limitParam)));
+      const offset = offsetParam === undefined ? 0 : Math.max(0, Number(offsetParam));
+      const paginated = fullLog.slice(offset, offset + limit);
+
+      res.json(paginated);
     }),
   );
 

@@ -420,4 +420,34 @@ describe("WebhookDispatcher Unit Tests", () => {
     expect(history[0].deliveredAt).toBeTruthy();
     expect(JSON.stringify(history)).not.toContain(secret);
   });
+
+  it("caps delivery log to maxDeliveryLogSize and evicts oldest entries", async () => {
+    const logPath = path.join(tempDir, "capped-deliveries.jsonl");
+    const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+    globalThis.fetch = fetchMock;
+
+    const dispatcher = new WebhookDispatcher({
+      maxRetries: 0,
+      deliveryLogPath: logPath,
+      maxDeliveryLogSize: 500,
+      webhooks: [
+        {
+          id: "wh-capped",
+          url: "https://example.com/capped",
+          secret,
+          events: ["transaction.sponsored"],
+        },
+      ],
+    });
+
+    for (let i = 0; i < 600; i++) {
+      await dispatcher.dispatch("transaction.sponsored", { index: i });
+    }
+
+    const log = await dispatcher.getDeliveryLog();
+    expect(log).toHaveLength(500);
+    // Oldest 100 entries (indices 0..99) should be evicted; entries remaining should start from index 100
+    expect((log[0].data as { index: number }).index).toBe(100);
+    expect((log[499].data as { index: number }).index).toBe(599);
+  });
 });

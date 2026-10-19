@@ -118,6 +118,8 @@ export interface WebhookDispatcherOpts {
   deadLetterQueue?: WebhookQueueLike;
   /** Override the retry schedule (primarily for tests). */
   retryDelaysMs?: readonly number[];
+  /** Maximum number of delivery log entries to retain. Defaults to 500. */
+  maxDeliveryLogSize?: number;
 }
 
 export class WebhookDispatcher {
@@ -128,6 +130,7 @@ export class WebhookDispatcher {
   private backoffFactor: number;
   private readonly deliveryLogPath: string;
   private deliveryLogWrite: Promise<void> = Promise.resolve();
+  private readonly maxDeliveryLogSize: number;
 
   private readonly redis?: WebhookRedisLike;
   private readonly queue?: WebhookQueueLike;
@@ -139,6 +142,7 @@ export class WebhookDispatcher {
     this.maxRetries = opts.maxRetries ?? 3;
     this.initialDelayMs = opts.initialDelayMs ?? 200;
     this.backoffFactor = opts.backoffFactor ?? 2;
+    this.maxDeliveryLogSize = opts.maxDeliveryLogSize ?? 500;
     this.deliveryLogPath =
       opts.deliveryLogPath ??
       process.env.LUMEN_WEBHOOK_DELIVERY_LOG_PATH ??
@@ -349,11 +353,33 @@ export class WebhookDispatcher {
         recursive: true,
         mode: 0o700,
       });
-      const lines = entries.map((entry) => JSON.stringify(entry)).join("\n");
-      await fs.promises.appendFile(this.deliveryLogPath, `${lines}\n`, {
+
+      let existingEntries: WebhookDeliveryLogEntry[] = [];
+      try {
+        const contents = await fs.promises.readFile(this.deliveryLogPath, "utf8");
+        existingEntries = contents
+          .split("\n")
+          .filter((line) => line.length > 0)
+          .map((line) => JSON.parse(line) as WebhookDeliveryLogEntry);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw error;
+        }
+      }
+
+      const combined = [...existingEntries, ...entries];
+      const capped =
+        this.maxDeliveryLogSize > 0 && combined.length > this.maxDeliveryLogSize
+          ? combined.slice(combined.length - this.maxDeliveryLogSize)
+          : combined;
+
+      const lines = capped.map((entry) => JSON.stringify(entry)).join("\n");
+      const tempPath = `${this.deliveryLogPath}.${randomUUID()}.tmp`;
+      await fs.promises.writeFile(tempPath, lines.length > 0 ? `${lines}\n` : "", {
         encoding: "utf8",
         mode: 0o600,
       });
+      await fs.promises.rename(tempPath, this.deliveryLogPath);
     });
     this.deliveryLogWrite = write.catch((error: unknown) => {
       logger.error({ error }, "Failed to persist webhook delivery log");
