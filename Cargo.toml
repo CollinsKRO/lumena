@@ -4,6 +4,7 @@ members = [
   "contracts/event-schema",
   "contracts/sbt-identity",
   "contracts/smart-account",
+  "contracts/payment-streaming",
 ]
 
 [workspace.dependencies]
