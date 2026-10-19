@@ -101,6 +101,32 @@ describe("Webhooks API & Server Integration", () => {
     vi.restoreAllMocks();
   });
 
+  it("supports pagination with limit and offset query params on GET /webhooks/deliveries", async () => {
+    const history = Array.from({ length: 5 }, (_, i) => ({
+      deliveryId: `delivery-${i}`,
+      event: "transaction.sponsored" as const,
+      timestamp: "2026-09-25T12:00:00.000Z",
+      deliveredAt: "2026-09-25T12:00:01.000Z",
+      webhookId: `wh-${i}`,
+      url: "https://example.com/webhook",
+      success: true,
+      statusCode: 200,
+      attempts: 1,
+      data: { index: i },
+    }));
+
+    vi.spyOn(serverResult.webhookDispatcher, "getDeliveryLog").mockResolvedValue(history);
+
+    const res = await fetch(`${BASE_URL}/webhooks/deliveries?limit=2&offset=1`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toHaveLength(2);
+    expect(body[0].deliveryId).toBe("delivery-1");
+    expect(body[1].deliveryId).toBe("delivery-2");
+
+    vi.restoreAllMocks();
+  });
+
   it("returns delivery history for a specific webhook via GET /webhooks/:id/deliveries", async () => {
     const history = [
       {
