@@ -62,11 +62,13 @@ describe("API Key Authentication & Rate Limiting Middleware", () => {
     await new Promise<void>((resolve) => serverResult.server.close(() => resolve()));
   });
 
-  it("allows /health without an API key", async () => {
+  it("allows /health without an API key and reports correct version", async () => {
     const res = await fetch(`${baseUrl}/health`);
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as { status: string; version: string };
     expect(body.status).toBe("ok");
+    expect(typeof body.version).toBe("string");
+    expect(body.version).toBe("0.1.0");
   });
 
   it("does not allow cross-origin requests by default", async () => {
