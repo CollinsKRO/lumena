@@ -26,6 +26,12 @@ import { createIdempotencyMiddleware } from "./middleware/idempotency.js";
 import { createAntiReplayMiddleware } from "./middleware/anti-replay.js";
 import { createRbacMiddleware, type RbacConfig } from "./middleware/rbac.js";
 import {
+  createTenantAuthMiddleware,
+  type TenantStore,
+} from "./middleware/auth.js";
+import { createSep10Router, type Sep10Config } from "./auth/sep10.js";
+import type { SequenceAllocator } from "./fee-sponsor/sequence-allocator.js";
+import {
   CosignRequestSchema,
   CosignBatchRequestSchema,
   FeeBumpRequestSchema,
@@ -199,6 +205,21 @@ export interface ServerOpts {
    */
   rbac?: RbacConfig;
   /**
+   * Optional multi-tenant API key store. When provided, requests are
+   * authenticated against tenant API keys and subject to per-tenant quotas.
+   */
+  tenantStore?: TenantStore;
+  /**
+   * Optional distributed sequence number allocator (Redis Redlock) shared by
+   * the fee-sponsor and co-signer services.
+   */
+  sequenceAllocator?: SequenceAllocator;
+  /**
+   * Optional SEP-10 web authentication configuration. When provided, the
+   * `/auth` router (challenge + token) is mounted.
+   */
+  sep10?: Sep10Config;
+  /**
    * Grace period (ms) used by the shutdown hook to drain in-flight requests.
    * Defaults to 15000.
    */
@@ -248,12 +269,14 @@ export function createServer(opts: ServerOpts): ServerResult {
     policyEngine,
     webhookDispatcher,
     fraudDetector,
+    sequenceAllocator: opts.sequenceAllocator,
   });
 
   const feeSponsorService = new FeeSponsorService({
     client,
     signer: opts.feePayerSigner,
     webhookDispatcher,
+    sequenceAllocator: opts.sequenceAllocator,
   });
 
   const sponsorMonitorService = new SponsorMonitorService({
@@ -357,29 +380,15 @@ return 1
     next();
   });
 
-  // API Key Authentication Middleware
-  if (opts.apiKey) {
-    app.use((req: Request, res: Response, next: NextFunction) => {
-      const cleanPath = (req.path || "").replace(/\/+$/, "") || "/";
-      if (cleanPath === "/health" || cleanPath === "/health/deep" || cleanPath === "/metrics") {
-        return next();
-      }
-
-      const authHeader = req.headers.authorization;
-      if (!authHeader) {
-        res.status(401).json({ error: "Unauthorized" });
-        return;
-      }
-
-      const parts = authHeader.split(" ");
-      if (parts.length !== 2 || parts[0] !== "Bearer" || parts[1] !== opts.apiKey) {
-        res.status(401).json({ error: "Unauthorized" });
-        return;
-      }
-
-      next();
-    });
-  }
+  // Multi-tenant API key authentication + tiered quota enforcement.
+  // Falls back to the legacy single global API key when no tenant store is
+  // configured. /health and /metrics remain public.
+  const tenantAuth = createTenantAuthMiddleware({
+    tenantStore: opts.tenantStore,
+    legacyApiKey: opts.apiKey,
+    redis: opts.redis,
+  });
+  app.use(tenantAuth);
 
   // Token bucket rate limiting (sliding-window, burst + steady-state refill).
   // Backward-compatible options map windowMs/max onto bucket capacity/refill.
@@ -410,6 +419,18 @@ return 1
   const rbac = createRbacMiddleware(opts.rbac);
 
   app.use("/docs", swaggerUi.serve, swaggerUi.setup(openApiSpec));
+
+  // #235 — SEP-10 web authentication (challenge + token issuance).
+  if (opts.sep10) {
+    app.use(
+      "/auth",
+      createSep10Router({
+        ...opts.sep10,
+        client,
+        signer: opts.sep10.signer ?? opts.cosignerSigner,
+      }),
+    );
+  }
 
   let activeRequests = 0;
 
@@ -905,6 +926,34 @@ return 1
     "/webhooks/deliveries",
     wrapHandler(async (_req: Request, res: Response) => {
       res.json(await webhookDispatcher.getDeliveryLog());
+    }),
+  );
+
+  // #236 — per-webhook delivery history and manual retry of DLQ entries.
+  app.get(
+    "/webhooks/:id/deliveries",
+    wrapHandler(async (req: Request, res: Response) => {
+      const id = req.params.id as string;
+      if (!webhookDispatcher.get(id)) {
+        res.status(404).json({ error: "Webhook not found" });
+        return;
+      }
+      res.json(await webhookDispatcher.getDeliveries(id));
+    }),
+  );
+
+  app.post(
+    "/webhooks/deliveries/:id/retry",
+    rbac.requirePermission("webhooks:write"),
+    idempotency,
+    wrapHandler(async (req: Request, res: Response) => {
+      const deliveryId = req.params.id as string;
+      const result = await webhookDispatcher.retryDelivery(deliveryId);
+      if (!result) {
+        res.status(404).json({ error: "Delivery not found" });
+        return;
+      }
+      res.json(result);
     }),
   );
 
