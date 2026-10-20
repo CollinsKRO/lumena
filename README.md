@@ -214,3 +214,8 @@ See [docs/SECURITY.md](docs/SECURITY.md) for the full security policy, vulnerabi
 ## License
 
 MIT
+
+## Handsoff notes
+
+<!-- handsoff-issue-357 -->
+- #357: [Feature] server: DELETE /policy/:walletId is not wrapped in wrapHandler, so thrown errors bypass the global error handler
