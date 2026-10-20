@@ -1,9 +1,9 @@
 import { Keypair } from "@stellar/stellar-sdk";
 import {
-  decryptKeypair,
-  encryptKeypair,
-  exportKeystore,
-  importKeystore,
+  decryptKeystore,
+  encryptKeystore,
+  parseKeystoreEnvelope,
+  type EncryptOptions,
   type KeystoreEnvelope,
 } from "./keystore";
 import {
@@ -140,12 +140,19 @@ export class KeyManager {
     return Keypair.fromRawEd25519Seed(seed);
   }
 
-  async store(key: Keypair, passphrase: string): Promise<StoredKey> {
-    const envelope = await encryptKeypair(key, passphrase);
+  async store(
+    key: Keypair,
+    passphrase: string,
+    options?: EncryptOptions,
+  ): Promise<StoredKey> {
+    const envelope = await encryptKeystore(key.secret(), passphrase, {
+      ...options,
+      publicKey: key.publicKey(),
+    });
 
     const stored: StoredKey = {
       publicKey: envelope.publicKey,
-      encryptedSecret: `${envelope.salt}.${envelope.iv}.${envelope.ciphertext}`,
+      encryptedSecret: JSON.stringify(envelope),
       createdAt: new Date(envelope.createdAt),
     };
     this.storage.setItem(`${STORAGE_PREFIX}${stored.publicKey}`, JSON.stringify(stored));
@@ -160,8 +167,9 @@ export class KeyManager {
     const storedValue = this.storage.getItem(`${STORAGE_PREFIX}${publicKey}`);
     if (storedValue === null) throw new Error(`Key not found: ${publicKey}`);
     const stored = parseStoredKey(storedValue);
-
-    return exportKeystore(stored, passphrase);
+    const envelope = parseKeystoreEnvelope(stored.encryptedSecret);
+    await decryptKeystore(envelope, passphrase);
+    return envelope;
   }
 
   /**
@@ -169,7 +177,17 @@ export class KeyManager {
    * resulting key in local storage.
    */
   async import(envelope: KeystoreEnvelope | string, passphrase: string): Promise<StoredKey> {
-    const storedKey = await importKeystore(envelope, passphrase);
+    const parsedEnvelope = parseKeystoreEnvelope(envelope);
+    const secret = await decryptKeystore(parsedEnvelope, passphrase);
+    const keypair = Keypair.fromSecret(secret);
+    if (keypair.publicKey() !== parsedEnvelope.publicKey) {
+      throw new Error("Keystore public key does not match its secret");
+    }
+    const storedKey: StoredKey = {
+      publicKey: keypair.publicKey(),
+      encryptedSecret: JSON.stringify(parsedEnvelope),
+      createdAt: new Date(parsedEnvelope.createdAt),
+    };
     this.storage.setItem(
       `${STORAGE_PREFIX}${storedKey.publicKey}`,
       JSON.stringify(storedKey),
@@ -182,7 +200,36 @@ export class KeyManager {
     if (storedValue === null) throw new Error(`Key not found: ${publicKey}`);
     const stored = parseStoredKey(storedValue);
 
-    const { keypair } = await decryptKeypair(stored, passphrase);
+    const envelope = parseKeystoreEnvelope(stored.encryptedSecret);
+    const secret = await decryptKeystore(envelope, passphrase);
+    const keypair = Keypair.fromSecret(secret);
+    if (keypair.publicKey() !== publicKey) {
+      throw new Error("Stored key public key does not match its secret");
+    }
+    return keypair;
+  }
+
+  async exportKeystore(
+    keypair: Keypair,
+    passphrase: string,
+    options?: EncryptOptions,
+  ): Promise<KeystoreEnvelope> {
+    return encryptKeystore(keypair.secret(), passphrase, {
+      ...options,
+      publicKey: keypair.publicKey(),
+    });
+  }
+
+  async importKeystore(
+    envelope: KeystoreEnvelope | string,
+    passphrase: string,
+  ): Promise<Keypair> {
+    const parsedEnvelope = parseKeystoreEnvelope(envelope);
+    const secret = await decryptKeystore(parsedEnvelope, passphrase);
+    const keypair = Keypair.fromSecret(secret);
+    if (keypair.publicKey() !== parsedEnvelope.publicKey) {
+      throw new Error("Keystore public key does not match its secret");
+    }
     return keypair;
   }
 

@@ -367,6 +367,15 @@ export async function encryptKeypair(
   };
 }
 
+/** Encrypts a secret as a versioned keystore envelope. */
+export async function encryptKeystore(
+  secret: string,
+  passphrase: string,
+  opts: EncryptOptions = {},
+): Promise<KeystoreEnvelope> {
+  return encryptKeypair(secret, passphrase, opts);
+}
+
 /**
  * Decrypt a keystore envelope with a passphrase.
  *
@@ -417,6 +426,28 @@ export async function decryptKeypair(
   }
 
   return utf8Decode(new Uint8Array(plaintextBuf));
+}
+
+/** Decrypts a versioned keystore envelope to its original secret. */
+export async function decryptKeystore(
+  envelope: KeystoreEnvelope,
+  passphrase: string,
+): Promise<string> {
+  return decryptKeypair(envelope, passphrase);
+}
+
+/** Parses and validates an unknown value as a keystore envelope. */
+export function parseKeystoreEnvelope(value: unknown): KeystoreEnvelope {
+  let parsed = value;
+  if (typeof value === 'string') {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      throw new KeystoreError('Keystore JSON is malformed', 'INVALID_ENVELOPE');
+    }
+  }
+  validateEnvelope(parsed);
+  return parsed;
 }
 
 /**

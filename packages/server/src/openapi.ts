@@ -407,7 +407,23 @@ export const openApiSpec = {
       post: {
         summary: "Create Seedless Wallet",
         description:
-          "Provisions a new sponsored Stellar account with multi-signature key configuration.",
+          "Provisions a sponsored Stellar account. To create an account controlled by a native client, provide ownerPublicKey; the client then initializes its multisig signer before submitting transactions.",
+        requestBody: {
+          required: false,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  ownerPublicKey: {
+                    type: "string",
+                    description: "Stellar public key controlled by the wallet owner",
+                  },
+                },
+              },
+            },
+          },
+        },
         responses: {
           "200": {
             description: "Wallet created successfully",

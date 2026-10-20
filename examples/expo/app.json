@@ -1,0 +1,15 @@
+{
+  "expo": {
+    "name": "Lumen Native Wallet",
+    "slug": "lumen-native-wallet",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "plugins": ["expo-secure-store"],
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "org.lumen.nativewallet"
+    }
+  }
+}

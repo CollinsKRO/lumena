@@ -1,5 +1,5 @@
 export { LumenClient, createSessionKey } from "./client.js";
-export type { LumenClientOpts, SessionKeyInfo } from "./client.js";
+export type { KeypairWalletResult, LumenClientOpts, SessionKeyInfo } from "./client.js";
 
 /**
  * Heavy passkey / crypto helpers are intentionally NOT re-exported from the

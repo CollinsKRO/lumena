@@ -11,7 +11,15 @@ import {
   type IncomingMessage,
 } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
-import { Keypair, StrKey, Transaction, TransactionBuilder } from "@stellar/stellar-sdk";
+import {
+  BASE_FEE,
+  Keypair,
+  Operation,
+  StrKey,
+  Transaction,
+  TransactionBuilder,
+  xdr,
+} from "@stellar/stellar-sdk";
 import { StellarClient } from "@lumen/core";
 import type { Signer } from "@lumen/types";
 import type { WalletRegistry } from "@lumen/core";
@@ -808,6 +816,59 @@ return 1
     "/wallet/create",
     idempotency,
     wrapHandler(async (req: Request, res: Response) => {
+      const body: unknown = req.body;
+      const ownerPublicKey =
+        typeof body === "object" && body !== null && "ownerPublicKey" in body
+          ? body.ownerPublicKey
+          : undefined;
+
+      if (ownerPublicKey !== undefined) {
+        if (
+          typeof ownerPublicKey !== "string" ||
+          !StrKey.isValidEd25519PublicKey(ownerPublicKey)
+        ) {
+          throw new ValidationError("ownerPublicKey must be a valid Stellar public key");
+        }
+
+        const sponsor = Keypair.fromPublicKey(opts.feePayerSigner.publicKey());
+        const sponsorAccount = await client.horizon.loadAccount(sponsor.publicKey());
+        const createTx = new TransactionBuilder(sponsorAccount, {
+          fee: BASE_FEE,
+          networkPassphrase: client.networkPassphrase,
+        })
+          .addOperation(
+            Operation.createAccount({
+              destination: ownerPublicKey,
+              startingBalance: "10",
+            }),
+          )
+          .setTimeout(180)
+          .build();
+        const signature = await opts.feePayerSigner.sign(createTx.hash());
+        createTx.signatures.push(
+          new xdr.DecoratedSignature({
+            hint: sponsor.rawPublicKey().slice(-4),
+            signature: Buffer.from(signature),
+          }),
+        );
+        await client.horizon.submitTransaction(createTx);
+
+        if (opts.walletRegistry) {
+          await opts.walletRegistry.register(ownerPublicKey);
+        }
+
+        void webhookDispatcher
+          .dispatch("wallet.created", {
+            address: ownerPublicKey,
+            publicKey: ownerPublicKey,
+          })
+          .catch((error: unknown) => {
+            logger.error({ error }, "Failed to dispatch wallet.created webhook");
+          });
+        res.json({ address: ownerPublicKey, publicKey: ownerPublicKey });
+        return;
+      }
+
       const { Wallet } = await import("@lumen/core");
 
       const sponsorKeypair = Keypair.fromPublicKey(opts.cosignerSigner.publicKey());
