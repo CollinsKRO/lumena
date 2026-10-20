@@ -35,6 +35,7 @@ export type PermissionAction =
   | 'policy:update'
   | 'webhooks:update'
   | 'wallets:read'
+  | 'audit:read'
   | 'admin';
 
 const VALID_ROLES: Role[] = ['admin', 'operator', 'auditor'];
@@ -44,9 +45,9 @@ const VALID_ROLES: Role[] = ['admin', 'operator', 'auditor'];
  * Least-privilege by default — anything not listed is denied.
  */
 export const ROLE_PERMISSIONS: Record<Role, PermissionAction[]> = {
-  auditor: ['read', 'wallets:read'],
-  operator: ['read', 'wallets:read', 'policy:update'],
-  admin: ['read', 'wallets:read', 'policy:update', 'webhooks:update', 'admin'],
+  auditor: ['read', 'wallets:read', 'audit:read'],
+  operator: ['read', 'wallets:read', 'policy:update', 'audit:read'],
+  admin: ['read', 'wallets:read', 'policy:update', 'webhooks:update', 'admin', 'audit:read'],
 };
 
 /**
