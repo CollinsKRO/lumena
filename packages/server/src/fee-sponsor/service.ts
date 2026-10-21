@@ -3,7 +3,7 @@ import type { Signer } from "@lumen/types";
 import type { StellarClient } from "@lumen/core";
 import type { WebhookDispatcher } from "../webhook/dispatcher.js";
 import { trackOperation } from "../lifecycle.js";
-import type { SequenceAllocator } from "./sequence-allocator.js";
+import type { SequenceAllocator, SequenceReservation } from "./sequence-allocator.js";
 
 export interface FeeSponsorOpts {
   client: StellarClient;
@@ -103,16 +103,16 @@ export class FeeSponsorService {
   async submit(innerTxXdr: string): Promise<{ hash: string; feeBumpHash: string }> {
     return trackOperation("fee-bump:submit", async () => {
       let lastError: unknown;
-      let reservedSequence: string | undefined;
+      let reservation: SequenceReservation | undefined;
 
       for (let attempt = 0; attempt < this.maxSubmitAttempts; attempt++) {
         // Reserve a fresh sequence number for each attempt when an allocator
         // is configured. On retry after txBAD_SEQ we re-reserve.
         if (this.sequenceAllocator) {
-          reservedSequence = await this.sequenceAllocator.reserve(this.signer.publicKey());
+          reservation = await this.sequenceAllocator.reserve(this.signer.publicKey());
         }
 
-        const feeBumpXdr = await this.wrapFeeBump(innerTxXdr, reservedSequence);
+        const feeBumpXdr = await this.wrapFeeBump(innerTxXdr, reservation?.sequence);
         const parsed = TransactionBuilder.fromXDR(feeBumpXdr, this.client.networkPassphrase);
 
         let result: Awaited<ReturnType<StellarClient["horizon"]["submitTransaction"]>>;
@@ -122,12 +122,12 @@ export class FeeSponsorService {
           if (this.isBadSeqError(err) && attempt < this.maxSubmitAttempts - 1) {
             lastError = err;
             // Roll back the reservation so the sequence can be reused.
-            if (this.sequenceAllocator && reservedSequence !== undefined) {
+            if (this.sequenceAllocator && reservation !== undefined) {
               await this.sequenceAllocator
-                .rollback(this.signer.publicKey(), reservedSequence)
+                .rollback(this.signer.publicKey(), reservation.sequence)
                 .catch(() => {});
             }
-            reservedSequence = undefined;
+            reservation = undefined;
             const backoff = this.retryBaseDelayMs * 2 ** attempt;
             await this.delay(backoff);
             continue;
@@ -137,6 +137,12 @@ export class FeeSponsorService {
 
         if (!result.successful) {
           throw new Error(`Fee-bump submission failed: ${result.hash}`);
+        }
+
+        // The sequence number has been consumed by the ledger: retire the
+        // reservation so it is never handed out again.
+        if (this.sequenceAllocator && reservation !== undefined) {
+          await this.sequenceAllocator.commit(reservation.token).catch(() => {});
         }
 
       if (this.webhookDispatcher) {

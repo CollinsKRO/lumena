@@ -1167,4 +1167,18 @@ export const openApiSpec = {
         properties: {
           id: { type: "string", example: "550e8400-e29b-41d4-a716-446655440000" },
           webhookId: { type: "string", example: "550e8400-e29b-41d4-a716-446655440000" },
-          event:
+          event: { type: "string", example: "transaction.cosigned" },
+          attempt: { type: "integer", example: 1 },
+          success: { type: "boolean", example: true },
+          statusCode: { type: "integer", example: 200 },
+          error: { type: "string", example: "HTTP 500: Internal Server Error" },
+          timestamp: { type: "string", format: "date-time" },
+          deliveredAt: { type: "string", format: "date-time" },
+          deadLettered: { type: "boolean", description: "True once routed to the dead-letter queue." },
+        },
+        required: ["id", "webhookId", "event", "attempt", "success", "timestamp"],
+      },
+    },
+  },
+  security: [{ bearerAuth: [] }],
+} as const;

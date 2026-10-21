@@ -50,3 +50,15 @@ export const stellarEndpointHealthy = new client.Gauge({
   labelNames: ["endpoint"],
   registers: [register],
 });
+
+export const stellarHealthyEndpoints = new client.Gauge({
+  name: "lumen_stellar_healthy_endpoints",
+  help: "Number of Stellar endpoints currently considered healthy",
+  registers: [register],
+});
+
+export const stellarTotalEndpoints = new client.Gauge({
+  name: "lumen_stellar_total_endpoints",
+  help: "Number of Stellar endpoints configured for failover routing",
+  registers: [register],
+});
