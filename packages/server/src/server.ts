@@ -27,9 +27,10 @@ import {
 } from "./middleware/rate-limiter.js";
 import { createIdempotencyMiddleware } from "./middleware/idempotency.js";
 import { createAntiReplayMiddleware } from "./middleware/anti-replay.js";
-import { createRbacMiddleware, type RbacConfig } from "./middleware/rbac.js";
+import { createRbacMiddleware, parseClaims, ROLE_PERMISSIONS, type RbacConfig } from "./middleware/rbac.js";
 import {
   createTenantAuthMiddleware,
+  hashApiKey,
   type TenantStore,
 } from "./middleware/auth.js";
 import { createSep10Router, type Sep10Config } from "./auth/sep10.js";
@@ -1130,6 +1131,109 @@ return 1
   server.on("upgrade", (req, socket, head) => {
     const pathname = (req.url ?? "").split("?")[0];
     if (pathname === "/audit/stream") {
+      const authHeader = req.headers.authorization;
+      const bearerToken =
+        authHeader && authHeader.startsWith("Bearer ")
+          ? authHeader.substring(7).trim()
+          : undefined;
+      const urlObj = new URL(req.url ?? "", `http://${req.headers.host ?? "localhost"}`);
+      const queryToken = urlObj.searchParams.get("token") ?? undefined;
+      const apiKeyHeader = req.headers["x-api-key"] as string | undefined;
+      const providedKey = bearerToken || queryToken || apiKeyHeader;
+
+      const expectedApiKey = opts.apiKey || process.env.LUMEN_API_KEY;
+      const jwtSecret = process.env.JWT_SECRET;
+      const tenantStore = opts.tenantStore;
+
+      let authenticated = false;
+      let failureStatus = 401;
+
+      // 1. Check API key if configured
+      if (expectedApiKey) {
+        if (providedKey && providedKey === expectedApiKey) {
+          authenticated = true;
+        } else {
+          failureStatus = 401;
+          authenticated = false;
+        }
+      }
+
+      // 2. Check RBAC / JWT claims if configured
+      if (!authenticated && (opts.rbac || jwtSecret)) {
+        if (!req.headers.authorization && providedKey) {
+          req.headers.authorization = `Bearer ${providedKey}`;
+        }
+        const claims = parseClaims(req as Request);
+        if (claims) {
+          const permissions = ROLE_PERMISSIONS[claims.role] ?? [];
+          if (permissions.includes("audit:read")) {
+            authenticated = true;
+          } else {
+            failureStatus = 403;
+            authenticated = false;
+          }
+        } else {
+          failureStatus = 401;
+          authenticated = false;
+        }
+      }
+
+      // 3. Check tenant store if configured
+      if (!authenticated && tenantStore) {
+        if (providedKey) {
+          const tenant = tenantStore.findByApiKeyHash(hashApiKey(providedKey));
+          if (tenant) {
+            const origin = req.headers.origin as string | undefined;
+            const allowedDomains = tenant.allowedDomains ?? [];
+            let domainAllowed = true;
+            if (allowedDomains.length > 0 && origin) {
+              try {
+                const host = new URL(origin).hostname.toLowerCase();
+                domainAllowed = allowedDomains.some((d) => {
+                  const norm = d.toLowerCase().trim();
+                  if (norm.startsWith("*.")) {
+                    return host.endsWith(norm.slice(1)) || host === norm.slice(2);
+                  }
+                  return host === norm;
+                });
+              } catch {
+                domainAllowed = false;
+              }
+            }
+            if (domainAllowed) {
+              authenticated = true;
+            } else {
+              failureStatus = 403;
+              authenticated = false;
+            }
+          } else {
+            failureStatus = 401;
+            authenticated = false;
+          }
+        } else {
+          failureStatus = 401;
+          authenticated = false;
+        }
+      }
+
+      // 4. If no authentication is configured at all, pass through
+      if (!expectedApiKey && !opts.rbac && !jwtSecret && !tenantStore) {
+        authenticated = true;
+      }
+
+      if (!authenticated) {
+        const statusText = failureStatus === 403 ? "Forbidden" : "Unauthorized";
+        socket.write(
+          `HTTP/1.1 ${failureStatus} ${statusText}\r\n` +
+            "Content-Type: text/plain\r\n" +
+            `Content-Length: ${statusText.length}\r\n` +
+            "Connection: close\r\n\r\n" +
+            statusText,
+        );
+        socket.destroy();
+        return;
+      }
+
       auditWebSocketServer.handleUpgrade(req, socket, head, (ws) => {
         auditWebSocketServer.emit("connection", ws, req);
       });
