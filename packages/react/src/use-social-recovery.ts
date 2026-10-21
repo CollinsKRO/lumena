@@ -167,9 +167,10 @@ export function useSocialRecovery(
       setError(null);
 
       try {
-        const data = await client.get<RecoveryRequest>(
-          `/recovery/initiate?walletId=${encodeURIComponent(walletId)}&newPublicKey=${encodeURIComponent(newPublicKey)}`,
-        );
+        const data = await client.post<RecoveryRequest>("/recovery/initiate", {
+          walletId,
+          newPublicKey,
+        });
         track(data);
       } catch (err) {
         fail(err);
@@ -183,8 +184,9 @@ export function useSocialRecovery(
       setError(null);
 
       try {
-        const data = await client.get<RecoveryRequest>(
+        const data = await client.post<RecoveryRequest>(
           `/recovery/${encodeURIComponent(recoveryId)}/approve`,
+          { recoveryId },
         );
         track(data);
       } catch (err) {
@@ -203,7 +205,7 @@ export function useSocialRecovery(
     setError(null);
 
     try {
-      const data = await client.get<RecoveryRequest>(
+      const data = await client.post<RecoveryRequest>(
         `/recovery/${encodeURIComponent(recovery.id)}/cancel`,
       );
       track(data);

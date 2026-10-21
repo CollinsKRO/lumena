@@ -471,6 +471,11 @@ export class LumenClient {
   async get<T>(path: string): Promise<T> {
     return this.request<T>("GET", path);
   }
+
+  /** Makes an authenticated HTTP POST with an optional JSON body. */
+  async post<T>(path: string, body?: unknown): Promise<T> {
+    return this.request<T>("POST", path, body);
+  }
 }
 
 export async function createWalletWithPasskey(
