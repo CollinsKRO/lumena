@@ -63,6 +63,8 @@ const MaxOperationsRuleSchema = z.object({
 const FeeLimitRuleSchema = z.object({
   type: z.literal("fee_limit"),
   maxFeeStroops: z.number().int().positive("maxFeeStroops must be a positive integer"),
+});
+
 const ContractAllowlistRuleSchema = z.object({
   type: z.literal("contract_allowlist"),
   allowedContracts: z

@@ -31,7 +31,6 @@ export interface CosignerOpts {
 
 /** Horizon result code indicating a sequence number collision. */
 const TX_BAD_SEQ = "txBAD_SEQ";
-=======
 
 export interface CosignRequest {
   xdr: string;

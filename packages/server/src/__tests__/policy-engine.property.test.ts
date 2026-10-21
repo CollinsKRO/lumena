@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import fc from 'fast-check';
-import { PolicyEngine } from '../policy-engine';
+import { PolicyEngine } from '../policy/engine.js';
 
 describe('PolicyEngine property-based tests', () => {
   it('approving a transaction always updates the spend tracker', () => {

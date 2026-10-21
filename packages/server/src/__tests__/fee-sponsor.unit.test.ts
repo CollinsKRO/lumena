@@ -473,34 +473,50 @@ describe("FeeSponsorService concurrency (issue #233)", () => {
 
   it("submits 50 concurrent fee-bumps without a single txBAD_SEQ conflict", async () => {
     const redis = makeFakeRedis();
-    const allocator = new SequenceAllocator({
+    const baseAllocator = new SequenceAllocator({
       redis: redis as any,
       key: `seq:${feePayerKeypair.publicKey()}`,
       startSequence: "100",
       reservationTtlMs: 5_000,
     });
 
-    // Horizon mock: rejects any submission whose fee-source sequence number
-    // has already been consumed, mirroring real txBAD_SEQ behaviour.
+    // Record every sequence number handed out by the allocator so the test can
+    // assert that concurrent submissions never share one.
+    const reservedSequences: string[] = [];
+    const allocator = {
+      reserve: async (account?: string) => {
+        const reservation = await baseAllocator.reserve(account);
+        reservedSequences.push(reservation.sequence);
+        return reservation;
+      },
+      release: (token: string) => baseAllocator.release(token),
+      commit: (token: string) => baseAllocator.commit(token),
+      rollback: (account: string, sequence: string) =>
+        baseAllocator.rollback(account, sequence),
+      pendingReservations: () => baseAllocator.pendingReservations(),
+      rollbackExpired: () => baseAllocator.rollbackExpired(),
+    };
+
+    // Horizon mock: a fee-bump envelope carries no fee-source sequence number
+    // (see CAP-0015 — replay protection relies on the inner transaction), so a
+    // replayed inner transaction is what produces txBAD_SEQ.
     const consumed = new Set<string>();
-    const seenSequences: string[] = [];
     const mockSubmit = vi.fn(async (tx: unknown) => {
       const feeBump = tx as FeeBumpTransaction;
-      const seq = feeBump.innerTransaction.sequence;
-      if (consumed.has(seq)) {
+      const innerHash = feeBump.innerTransaction.hash().toString("hex");
+      if (consumed.has(innerHash)) {
         const err: any = new Error("txBAD_SEQ");
         err.response = { data: { extras: { result_codes: { transaction: "txBAD_SEQ" } } } };
         throw err;
       }
-      consumed.add(seq);
-      seenSequences.push(seq);
-      return { successful: true, hash: seq.padStart(64, "0").slice(0, 64) };
+      consumed.add(innerHash);
+      return { successful: true, hash: innerHash };
     });
 
     const service = new FeeSponsorService({
       client: makeMockClient(mockSubmit),
       signer,
-      sequenceAllocator: allocator,
+      sequenceAllocator: allocator as never,
     });
 
     const innerXdrs = Array.from({ length: CONCURRENCY }, () =>
@@ -513,8 +529,8 @@ describe("FeeSponsorService concurrency (issue #233)", () => {
 
     expect(results).toHaveLength(CONCURRENCY);
     expect(mockSubmit).toHaveBeenCalledTimes(CONCURRENCY);
-    // Every submission succeeded with a distinct sequence number.
-    expect(new Set(seenSequences).size).toBe(CONCURRENCY);
+    // Every submission reserved a distinct sequence number.
+    expect(new Set(reservedSequences).size).toBe(CONCURRENCY);
     // No reservation leaked.
     expect(await allocator.pendingReservations()).toBe(0);
   });

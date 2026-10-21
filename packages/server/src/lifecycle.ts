@@ -24,6 +24,8 @@ export interface ShutdownOptions {
 
 interface InFlightEntry {
   promise: Promise<unknown>;
+  /** Optional label describing the operation, used for diagnostics. */
+  name?: string;
 }
 
 const inFlight = new Set<InFlightEntry>();
@@ -34,9 +36,24 @@ let handlersRegistered = false;
 /**
  * Register an in-flight operation so the shutdown coordinator can wait for it
  * to settle before exiting. Returns the wrapped promise.
+ *
+ * An optional label may be supplied to describe the operation; it is used
+ * for diagnostics only.
  */
-export function trackOperation<T>(fn: () => Promise<T> | T): Promise<T> {
-  const entry: InFlightEntry = { promise: Promise.resolve() };
+export function trackOperation<T>(fn: () => Promise<T> | T): Promise<T>;
+export function trackOperation<T>(name: string, fn: () => Promise<T> | T): Promise<T>;
+export function trackOperation<T>(
+  nameOrFn: string | (() => Promise<T> | T),
+  maybeFn?: () => Promise<T> | T,
+): Promise<T> {
+  const name = typeof nameOrFn === "string" ? nameOrFn : undefined;
+  const fn = typeof nameOrFn === "function" ? nameOrFn : maybeFn;
+
+  if (typeof fn !== "function") {
+    throw new TypeError("trackOperation requires an operation function");
+  }
+
+  const entry: InFlightEntry = { promise: Promise.resolve(), name };
   const promise = (async () => {
     try {
       return await fn();
