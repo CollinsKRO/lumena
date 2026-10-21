@@ -44,6 +44,7 @@ describe("KeyManager", () => {
       expect(stored).toHaveProperty("encryptedSecret");
       expect(stored).toHaveProperty("createdAt");
       expect(stored.publicKey).toBe(kp.publicKey());
+      expect(stored.publicKey).not.toBe("");
       expect(typeof stored.encryptedSecret).toBe("string");
       expect(stored.encryptedSecret).not.toBe("");
 

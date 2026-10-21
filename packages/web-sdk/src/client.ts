@@ -4,6 +4,7 @@ import {
   Wallet,
   KNOWN_ASSETS,
   PasskeyManager,
+  setupMultisig,
   type PasskeyRegistrationOpts,
 } from "@lumen/core";
 import type { StellarNetwork, ContractSimulationResult, ScValInput } from "@lumen/types";
@@ -38,6 +39,12 @@ export interface PasskeyWalletResult {
   address: string;
   id: string;
   credentialId: string;
+  keypair: Keypair;
+}
+
+export interface KeypairWalletResult {
+  address: string;
+  id: string;
   keypair: Keypair;
 }
 
@@ -136,6 +143,43 @@ export class LumenClient {
     return { address: result.address, id };
   }
 
+  /**
+   * Creates a sponsored wallet using a caller-managed signer. Useful for
+   * native platforms where passkey APIs are not available.
+   */
+  async createWalletWithKeypair(keypair: Keypair): Promise<KeypairWalletResult> {
+    const result = await this.request<{ address: string; id?: string }>(
+      "POST",
+      "/wallet/create",
+      { ownerPublicKey: keypair.publicKey() },
+    );
+    if (result.address !== keypair.publicKey()) {
+      throw new Error(
+        "Wallet creation returned an address that does not match the supplied signer",
+      );
+    }
+
+    await setupMultisig({
+      client: this.client,
+      accountKeypair: keypair,
+      coSignerPublicKey: this.serverPublicKey,
+    });
+
+    const address = result.address;
+    const wallet = new Wallet({
+      client: this.client,
+      serverPublicKey: this.serverPublicKey,
+      serverUrl: this.serverUrl,
+      ownerKeypair: keypair,
+    });
+    (wallet as any)._address = address;
+
+    const id = result.id ?? address;
+    this.wallets.set(id, wallet);
+
+    return { address, id, keypair };
+  }
+
   async createWalletWithPasskey(opts?: PasskeyRegistrationOpts): Promise<PasskeyWalletResult> {
     const passkeyManager = new PasskeyManager();
     const username = opts?.username ?? `user-${Date.now()}`;
@@ -145,26 +189,13 @@ export class LumenClient {
       challenge: opts?.challenge,
     });
 
-    // Register the passkey-derived public key with the server so it can set up
-    // multisig and sponsor the account without the client holding the sponsor key.
-    const result = await this.request<{ address: string; id?: string }>(
-      "POST",
-      "/wallet/create",
-      { ownerPublicKey: keypair.publicKey() },
-    );
-
-    const wallet = new Wallet({
-      client: this.client,
-      serverPublicKey: this.serverPublicKey,
-      serverUrl: this.serverUrl,
-      ownerKeypair: keypair,
-    });
-    (wallet as any)._address = result.address;
-
-    const id = result.id ?? result.address;
-    this.wallets.set(id, wallet);
-
-    return { address: result.address, id, credentialId, keypair };
+    const wallet = await this.createWalletWithKeypair(keypair);
+    return {
+      address: wallet.address,
+      id: wallet.id,
+      credentialId,
+      keypair,
+    };
   }
 
   async signWithPasskey(opts: {
