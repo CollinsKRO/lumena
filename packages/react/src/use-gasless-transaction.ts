@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useLumen } from "./context.js";
 import { useBalance } from "./use-balance.js";
 import { useToast, type ToastContextValue } from "./components/LumenToast.js";
@@ -69,10 +69,16 @@ export function useGaslessTransaction(
 
   const balance = optimisticBalance ?? confirmedBalance;
 
+  // Always holds the latest effective balance so execute() can read the
+  // current value at call time rather than at closure-creation time.
+  const balanceRef = useRef<string | undefined>(balance);
+  balanceRef.current = balance;
+
   const execute = useCallback(
     async ({ destination, amount }: GaslessTransactionParams): Promise<GaslessTransactionResult> => {
-      const snapshot = optimisticBalance;
-      const current = optimisticBalance ?? confirmedBalance;
+      // Capture the pre-call balance immediately at invocation time via the ref.
+      const snapshot = balanceRef.current;
+      const current = snapshot;
 
       setLoading(true);
       setError(null);
@@ -101,7 +107,7 @@ export function useGaslessTransaction(
         setLoading(false);
       }
     },
-    [client, walletId, assetCode, optimisticBalance, confirmedBalance, refetch, toast]
+    [client, walletId, assetCode, refetch, toast]
   );
 
   const reset = useCallback(() => {
