@@ -30,8 +30,8 @@ import { PolicyEngine } from "./policy/engine.js";
 import { FailoverStellarClient, type StellarEndpoint } from "./stellar/router.js";
 import { FraudDetector, type FraudDetectorConfig } from "./security/fraud-detector.js";
 import {
-  createTokenBucketLimiter,
-  type TokenBucketConfig,
+  createTokenBucketRateLimiter,
+  type BucketConfig,
 } from "./middleware/rate-limiter.js";
 import { createIdempotencyMiddleware } from "./middleware/idempotency.js";
 import { createAntiReplayMiddleware } from "./middleware/anti-replay.js";
@@ -221,11 +221,11 @@ export interface ServerOpts {
    * `capacity` is the maximum burst size; `refillRate` is the steady-state
    * number of tokens replenished per second.
    */
-  ipRateLimit?: TokenBucketConfig;
+  ipRateLimit?: BucketConfig;
   /**
    * Token bucket configuration for per-wallet-address rate limiting.
    */
-  walletRateLimit?: TokenBucketConfig;
+  walletRateLimit?: BucketConfig;
   /**
    * Optional RBAC configuration (JWT secret / role claim) for admin routes.
    */
@@ -462,16 +462,16 @@ return 1
     opts.rateLimit?.windowMs ?? opts.rateLimitWindowMs ?? opts.windowMs ?? 60 * 1000;
   const legacyMax = opts.rateLimit?.max ?? opts.rateLimitMax ?? opts.max ?? 100;
 
-  const ipRateLimit: TokenBucketConfig = opts.ipRateLimit ?? {
+  const ipRateLimit: BucketConfig = opts.ipRateLimit ?? {
     capacity: legacyMax,
     refillRate: legacyMax / (legacyWindowMs / 1000),
   };
-  const walletRateLimit: TokenBucketConfig = opts.walletRateLimit ?? {
+  const walletRateLimit: BucketConfig = opts.walletRateLimit ?? {
     capacity: legacyMax,
     refillRate: legacyMax / (legacyWindowMs / 1000),
   };
 
-  const rateLimiter = createTokenBucketLimiter({
+  const rateLimiter = createTokenBucketRateLimiter({
     redis: opts.redis,
     ip: ipRateLimit,
     wallet: walletRateLimit,
@@ -641,7 +641,7 @@ return 1
   // #243 — batch co-signing with atomic policy evaluation.
   app.post(
     "/cosign/batch",
-    cosignFeeBumpLimiter,
+    rateLimiter,
     antiReplay,
     wrapHandler(async (req: Request, res: Response) => {
       const parsed = CosignBatchRequestSchema.safeParse(req.body);
