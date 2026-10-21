@@ -189,6 +189,45 @@ export function parseClaims(req: Request): AuthClaims | null {
 }
 
 /**
+ * Base64url-encode a string into a JWT segment.
+ */
+function base64UrlEncode(input: string): string {
+  return Buffer.from(input, 'utf8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+/**
+ * Mint an HS256 JWT carrying the given role claims.
+ *
+ * This is the counterpart of {@link parseClaims}: it is used by tests and by
+ * tooling that needs to authenticate against the admin API.
+ */
+export function signRoleToken(
+  claims: { sub: string; role: Role } & Record<string, unknown>,
+  secret: string,
+  expiresInSeconds = 3600,
+): string {
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const header = { alg: 'HS256', typ: 'JWT' };
+  const payload = { ...claims, iat: issuedAt, exp: issuedAt + expiresInSeconds };
+
+  const headerB64 = base64UrlEncode(JSON.stringify(header));
+  const payloadB64 = base64UrlEncode(JSON.stringify(payload));
+  const signature = crypto
+    .createHmac('sha256', secret)
+    .update(`${headerB64}.${payloadB64}`)
+    .digest('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
+  return `${headerB64}.${payloadB64}.${signature}`;
+}
+
+/**
  * Emit a structured audit log entry for an access attempt.
  */
 function audit(
