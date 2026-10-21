@@ -4,10 +4,7 @@ members = [
   "contracts/event-schema",
   "contracts/sbt-identity",
   "contracts/smart-account",
-  "contracts/paymaster",
-  "contracts/session-keys",
-  "contracts/benchmarks",
-  "contracts/social-recovery",
+  "contracts/payment-streaming",
 ]
 
 [workspace.package]
