@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Symbol,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env,
 };
 
 /// Storage keys for the contract.
@@ -124,14 +124,14 @@ impl OracleSpendLimitContract {
     }
 
     /// Store a price for `asset` in the mock oracle. Records the current
-    /// ledger timestamp. Requires authorization from the oracle address.
+    /// ledger timestamp. Requires authorization from the admin address.
     pub fn set_price(env: Env, asset: Address, price: i128) {
-        let oracle: Address = env
+        let admin: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Oracle)
-            .expect("oracle not set");
-        oracle.require_auth();
+            .get(&DataKey::Admin)
+            .expect("admin not set");
+        admin.require_auth();
         let entry = PriceEntry {
             price,
             timestamp: env.ledger().timestamp(),
@@ -142,14 +142,14 @@ impl OracleSpendLimitContract {
     }
 
     /// Store a price for `asset` with an explicit timestamp. Useful for tests
-    /// that need to simulate stale prices. Requires authorization from the oracle address.
+    /// that need to simulate stale prices. Requires authorization from the admin address.
     pub fn set_price_at(env: Env, asset: Address, price: i128, timestamp: u64) {
-        let oracle: Address = env
+        let admin: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Oracle)
-            .expect("oracle not set");
-        oracle.require_auth();
+            .get(&DataKey::Admin)
+            .expect("admin not set");
+        admin.require_auth();
         let entry = PriceEntry { price, timestamp };
         env.storage()
             .persistent()
