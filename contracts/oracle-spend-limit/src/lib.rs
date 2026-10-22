@@ -124,14 +124,14 @@ impl OracleSpendLimitContract {
     }
 
     /// Store a price for `asset` in the mock oracle. Records the current
-    /// ledger timestamp.
+    /// ledger timestamp. Requires authorization from the oracle address.
     pub fn set_price(env: Env, asset: Address, price: i128) {
-        let admin: Address = env
+        let oracle: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
-            .expect("admin not set");
-        admin.require_auth();
+            .get(&DataKey::Oracle)
+            .expect("oracle not set");
+        oracle.require_auth();
         let entry = PriceEntry {
             price,
             timestamp: env.ledger().timestamp(),
@@ -142,14 +142,14 @@ impl OracleSpendLimitContract {
     }
 
     /// Store a price for `asset` with an explicit timestamp. Useful for tests
-    /// that need to simulate stale prices.
+    /// that need to simulate stale prices. Requires authorization from the oracle address.
     pub fn set_price_at(env: Env, asset: Address, price: i128, timestamp: u64) {
-        let admin: Address = env
+        let oracle: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
-            .expect("admin not set");
-        admin.require_auth();
+            .get(&DataKey::Oracle)
+            .expect("oracle not set");
+        oracle.require_auth();
         let entry = PriceEntry { price, timestamp };
         env.storage()
             .persistent()
