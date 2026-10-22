@@ -246,6 +246,7 @@ mod test {
         let client = OracleSpendLimitContractClient::new(env, &contract_id);
         let admin = Address::generate(env);
         let oracle = Address::generate(env);
+        client.initialize(&oracle, &max_age);
         client.initialize_with_admin(&admin, &oracle, &max_age);
         (client, oracle, admin)
     }
@@ -378,5 +379,5 @@ mod test {
         // Without mock_all_auths, calling set_price without admin auth should fail.
         let result = client.try_set_price(&asset, &USD_SCALE);
         assert!(result.is_err());
-    }
+}
 }
