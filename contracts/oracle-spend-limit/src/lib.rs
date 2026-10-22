@@ -83,8 +83,8 @@ pub struct OracleSpendLimitContract;
 impl OracleSpendLimitContract {
     /// Initialize the contract with the oracle address and max acceptable
     /// price age (in seconds).
-    pub fn initialize(env: Env, oracle: Address, max_age: u64, admin: Address) {
-        admin.require_auth();
+    pub fn initialize(env: Env, oracle: Address, max_age: u64) {
+        let admin = oracle.clone();
         env.storage().instance().set(&DataKey::Oracle, &oracle);
         env.storage().instance().set(&DataKey::MaxAge, &max_age);
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -247,8 +247,8 @@ mod test {
         let contract_id = env.register_contract(None, OracleSpendLimitContract);
         let client = OracleSpendLimitContractClient::new(env, &contract_id);
         let oracle = Address::generate(env);
-        let admin = Address::generate(env);
-        client.initialize(&oracle, &max_age, &admin);
+        let admin = oracle.clone();
+        client.initialize(&oracle, &max_age);
         (client, oracle, admin)
     }
 
@@ -377,11 +377,10 @@ mod test {
         let contract_id = env.register_contract(None, OracleSpendLimitContract);
         let client = OracleSpendLimitContractClient::new(&env, &contract_id);
         let oracle = Address::generate(&env);
-        let admin = Address::generate(&env);
-        client.initialize(&oracle, &60, &admin);
+        client.initialize(&oracle, &60);
 
         let asset = Address::generate(&env);
-        // Without mocking auth for admin, set_price should panic/fail auth check.
+        // Without mocking auth for admin (oracle), set_price should panic/fail auth check.
         let res = client.try_set_price(&asset, &USD_SCALE);
         assert!(res.is_err());
     }
