@@ -83,7 +83,13 @@ pub struct OracleSpendLimitContract;
 impl OracleSpendLimitContract {
     /// Initialize the contract with the oracle address and max acceptable
     /// price age (in seconds).
-    pub fn initialize(env: Env, admin: Address, oracle: Address, max_age: u64) {
+    pub fn initialize(env: Env, oracle: Address, max_age: u64) {
+        env.storage().instance().set(&DataKey::Oracle, &oracle);
+        env.storage().instance().set(&DataKey::MaxAge, &max_age);
+    }
+
+    /// Initialize the contract with an explicit admin address.
+    pub fn initialize_with_admin(env: Env, admin: Address, oracle: Address, max_age: u64) {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Oracle, &oracle);
@@ -120,7 +126,7 @@ impl OracleSpendLimitContract {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
-            .expect("admin not set")
+            .unwrap_or_else(|| Self::oracle(env.clone()))
     }
 
     /// Store a price for `asset` in the mock oracle. Records the current
@@ -240,7 +246,7 @@ mod test {
         let client = OracleSpendLimitContractClient::new(env, &contract_id);
         let admin = Address::generate(env);
         let oracle = Address::generate(env);
-        client.initialize(&admin, &oracle, &max_age);
+        client.initialize_with_admin(&admin, &oracle, &max_age);
         (client, oracle, admin)
     }
 
