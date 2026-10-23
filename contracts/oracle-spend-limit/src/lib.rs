@@ -100,7 +100,10 @@ impl OracleSpendLimitContract {
 
     /// Return the configured max age.
     pub fn max_age(env: Env) -> u64 {
-        env.storage().instance().get(&DataKey::MaxAge).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxAge)
+            .unwrap_or(0)
     }
 
     /// Set the USD spend limit for `asset` (7-decimal fixed point).
@@ -196,15 +199,21 @@ impl OracleSpendLimitContract {
             return Err(Error::SpendLimitExceeded);
         }
 
-        env.events()
-            .publish((symbol_short!("spend_ok"), asset), (amount, usd_value));
+        env.events().publish(
+            (symbol_short!("spend_ok"), asset),
+            (amount, usd_value),
+        );
 
         Ok(usd_value)
     }
 
     /// Validate that the price entry is not older than the configured max age.
     fn validate_freshness(env: &Env, entry: &PriceEntry) -> Result<(), Error> {
-        let max_age: u64 = env.storage().instance().get(&DataKey::MaxAge).unwrap_or(0);
+        let max_age: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxAge)
+            .unwrap_or(0);
         let now = env.ledger().timestamp();
 
         // Guard against future-dated prices and stale prices.
