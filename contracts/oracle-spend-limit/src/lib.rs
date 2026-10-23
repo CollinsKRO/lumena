@@ -16,6 +16,8 @@ pub enum DataKey {
     Limit(Address),
     /// Per-asset price entry stored by the mock oracle.
     Price(Address),
+    /// Admin address authorized to update prices.
+    Admin,
 }
 
 /// A price entry stored by the oracle: USD price (7-decimal fixed point) and
@@ -79,9 +81,11 @@ pub struct OracleSpendLimitContract;
 
 #[contractimpl]
 impl OracleSpendLimitContract {
-    /// Initialize the contract with the oracle address and max acceptable
+    /// Initialize the contract with the oracle address, admin address, and max acceptable
     /// price age (in seconds).
-    pub fn initialize(env: Env, oracle: Address, max_age: u64) {
+    pub fn initialize(env: Env, admin: Address, oracle: Address, max_age: u64) {
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Oracle, &oracle);
         env.storage().instance().set(&DataKey::MaxAge, &max_age);
     }
@@ -96,10 +100,7 @@ impl OracleSpendLimitContract {
 
     /// Return the configured max age.
     pub fn max_age(env: Env) -> u64 {
-        env.storage()
-            .instance()
-            .get(&DataKey::MaxAge)
-            .unwrap_or(0)
+        env.storage().instance().get(&DataKey::MaxAge).unwrap_or(0)
     }
 
     /// Set the USD spend limit for `asset` (7-decimal fixed point).
@@ -117,6 +118,8 @@ impl OracleSpendLimitContract {
     /// Store a price for `asset` in the mock oracle. Records the current
     /// ledger timestamp.
     pub fn set_price(env: Env, asset: Address, price: i128) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
         let entry = PriceEntry {
             price,
             timestamp: env.ledger().timestamp(),
@@ -129,6 +132,8 @@ impl OracleSpendLimitContract {
     /// Store a price for `asset` with an explicit timestamp. Useful for tests
     /// that need to simulate stale prices.
     pub fn set_price_at(env: Env, asset: Address, price: i128, timestamp: u64) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
         let entry = PriceEntry { price, timestamp };
         env.storage()
             .persistent()
@@ -183,21 +188,15 @@ impl OracleSpendLimitContract {
             return Err(Error::SpendLimitExceeded);
         }
 
-        env.events().publish(
-            (symbol_short!("spend_ok"), asset),
-            (amount, usd_value),
-        );
+        env.events()
+            .publish((symbol_short!("spend_ok"), asset), (amount, usd_value));
 
         Ok(usd_value)
     }
 
     /// Validate that the price entry is not older than the configured max age.
     fn validate_freshness(env: &Env, entry: &PriceEntry) -> Result<(), Error> {
-        let max_age: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::MaxAge)
-            .unwrap_or(0);
+        let max_age: u64 = env.storage().instance().get(&DataKey::MaxAge).unwrap_or(0);
         let now = env.ledger().timestamp();
 
         // Guard against future-dated prices and stale prices.
@@ -228,12 +227,13 @@ mod test {
     use soroban_sdk::testutils::{Address as _, Ledger};
     use soroban_sdk::{Address, Env};
 
-    fn setup(env: &Env, max_age: u64) -> (OracleSpendLimitContractClient<'_>, Address) {
+    fn setup(env: &Env, max_age: u64) -> (OracleSpendLimitContractClient<'_>, Address, Address) {
         let contract_id = env.register_contract(None, OracleSpendLimitContract);
         let client = OracleSpendLimitContractClient::new(env, &contract_id);
+        let admin = Address::generate(env);
         let oracle = Address::generate(env);
-        client.initialize(&oracle, &max_age);
-        (client, oracle)
+        client.initialize(&admin, &oracle, &max_age);
+        (client, oracle, admin)
     }
 
     #[test]
@@ -242,7 +242,7 @@ mod test {
         env.mock_all_auths();
         env.ledger().set_timestamp(1_000);
 
-        let (client, _oracle) = setup(&env, 60);
+        let (client, _oracle, _admin) = setup(&env, 60);
         let asset = Address::generate(&env);
 
         // Price: 0.5 USD per token, expressed as 5_000_000 (7 decimals).
@@ -266,7 +266,7 @@ mod test {
         env.mock_all_auths();
         env.ledger().set_timestamp(1_000);
 
-        let (client, _oracle) = setup(&env, 60);
+        let (client, _oracle, _admin) = setup(&env, 60);
         let asset = Address::generate(&env);
 
         // Price: 2 USD per token.
@@ -286,7 +286,7 @@ mod test {
         env.mock_all_auths();
         env.ledger().set_timestamp(1_000);
 
-        let (client, _oracle) = setup(&env, 60);
+        let (client, _oracle, _admin) = setup(&env, 60);
         let asset = Address::generate(&env);
 
         // Price recorded at t=100, now t=1000 => age 900 > max_age 60.
@@ -306,7 +306,7 @@ mod test {
         env.mock_all_auths();
         env.ledger().set_timestamp(1_000);
 
-        let (client, _oracle) = setup(&env, 60);
+        let (client, _oracle, _admin) = setup(&env, 60);
         let asset = Address::generate(&env);
         client.set_limit(&asset, &(100 * USD_SCALE));
 
@@ -324,7 +324,7 @@ mod test {
         env.mock_all_auths();
         env.ledger().set_timestamp(1_000);
 
-        let (client, _oracle) = setup(&env, 60);
+        let (client, _oracle, _admin) = setup(&env, 60);
         let asset = Address::generate(&env);
 
         // Price recorded at t=950, now t=1000 => age 50 <= max_age 60.
@@ -341,7 +341,7 @@ mod test {
         env.mock_all_auths();
         env.ledger().set_timestamp(1_000);
 
-        let (client, _oracle) = setup(&env, 60);
+        let (client, _oracle, _admin) = setup(&env, 60);
         let asset = Address::generate(&env);
         client.set_price(&asset, &USD_SCALE);
         client.set_limit(&asset, &(100 * USD_SCALE));
@@ -351,5 +351,22 @@ mod test {
 
         let result2 = client.try_check_spend(&asset, &-1);
         assert_eq!(result2, Err(Ok(Error::InvalidAmount)));
+    }
+
+    #[test]
+    fn test_unauthorized_price_update_rejected() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000);
+
+        let contract_id = env.register_contract(None, OracleSpendLimitContract);
+        let client = OracleSpendLimitContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let oracle = Address::generate(&env);
+        client.initialize(&admin, &oracle, &60);
+
+        let asset = Address::generate(&env);
+        // Without mock_all_auths, calling set_price without admin auth should fail
+        let result = client.try_set_price(&asset, &(USD_SCALE));
+        assert!(result.is_err());
     }
 }
