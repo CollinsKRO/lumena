@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Symbol,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env,
 };
 
 /// Storage keys for the contract.
@@ -380,5 +380,5 @@ mod test {
 
         // Without mock_all_auths or caller being admin, set_price should panic on require_auth
         client.set_price(&asset, &USD_SCALE);
-    }
+}
 }
