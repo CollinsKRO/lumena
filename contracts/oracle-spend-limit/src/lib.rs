@@ -357,10 +357,10 @@ mod test {
         // Do NOT mock all auths here so we test real auth requirements
         env.ledger().set_timestamp(1_000);
 
-        let (client, oracle) = setup(&env, 60);
+        let (client, _oracle) = setup(&env, 60);
         let asset = Address::generate(&env);
 
-        let unauthorized = Address::generate(&env);
+        let _unauthorized = Address::generate(&env);
         // Attempting to call set_price from an unauthorized account should fail.
         let res = client.try_set_price(&asset, &USD_SCALE);
         assert!(res.is_err());
