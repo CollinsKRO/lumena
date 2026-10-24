@@ -4,6 +4,137 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Symbol,
 };
 
+#[cfg(test)]
+mod test {
+    use super::*;
+    use soroban_sdk::testutils::{Address as _, Ledger};
+    use soroban_sdk::{Address, Env};
+
+    fn setup(env: &Env, max_age: u64) -> (OracleSpendLimitContractClient<'_>, Address) {
+        let contract_id = env.register_contract(None, OracleSpendLimitContract);
+        let client = OracleSpendLimitContractClient::new(env, &contract_id);
+        let oracle = Address::generate(env);
+        client.initialize(&oracle, &max_age);
+        (client, oracle)
+    }
+
+    #[test]
+    fn test_correct_conversion() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000);
+
+        let (client, _oracle) = setup(&env, 60);
+        let asset = Address::generate(&env);
+
+        // Price: 0.5 USD per token, expressed as 5_000_000 (7 decimals).
+        client.set_price(&asset, &5_000_000);
+        // Limit: 100 USD.
+        client.set_limit(&asset, &(100 * USD_SCALE));
+
+        // 10 tokens (10 * 10^7) at 0.5 USD => 5 USD.
+        let amount = 10 * USD_SCALE;
+        let usd = client.check_spend(&asset, &amount);
+        assert_eq!(usd, 5 * USD_SCALE);
+
+        // usd_value should match.
+        let usd2 = client.usd_value(&asset, &amount);
+        assert_eq!(usd2, 5 * USD_SCALE);
+    }
+
+    #[test]
+    fn test_spend_limit_exceeded() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000);
+
+        let (client, _oracle) = setup(&env, 60);
+        let asset = Address::generate(&env);
+
+        // Price: 2 USD per token.
+        client.set_price(&asset, &(2 * USD_SCALE));
+        // Limit: 10 USD.
+        client.set_limit(&asset, &(10 * USD_SCALE));
+
+        // 10 tokens at 2 USD => 20 USD > 10 USD limit.
+        let amount = 10 * USD_SCALE;
+        let result = client.try_check_spend(&asset, &amount);
+        assert_eq!(result, Err(Ok(Error::SpendLimitExceeded)));
+    }
+
+    #[test]
+    fn test_stale_price_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000);
+
+        let (client, _oracle) = setup(&env, 60);
+        let asset = Address::generate(&env);
+
+        // Price recorded at t=100, now t=1000 => age 900 > max_age 60.
+        client.set_price_at(&asset, &USD_SCALE, &100);
+        client.set_limit(&asset, &(100 * USD_SCALE));
+
+        let result = client.try_check_spend(&asset, &USD_SCALE);
+        assert_eq!(result, Err(Ok(Error::StalePrice)));
+
+        let result2 = client.try_usd_value(&asset, &USD_SCALE);
+        assert_eq!(result2, Err(Ok(Error::StalePrice)));
+    }
+
+    #[test]
+    fn test_missing_price_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000);
+
+        let (client, _oracle) = setup(&env, 60);
+        let asset = Address::generate(&env);
+        client.set_limit(&asset, &(100 * USD_SCALE));
+
+        // No price set for asset.
+        let result = client.try_check_spend(&asset, &USD_SCALE);
+        assert_eq!(result, Err(Ok(Error::MissingPrice)));
+
+        let result2 = client.try_usd_value(&asset, &USD_SCALE);
+        assert_eq!(result2, Err(Ok(Error::MissingPrice)));
+    }
+
+    #[test]
+    fn test_fresh_price_accepted() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000);
+
+        let (client, _oracle) = setup(&env, 60);
+        let asset = Address::generate(&env);
+
+        // Price recorded at t=950, now t=1000 => age 50 <= max_age 60.
+        client.set_price_at(&asset, &USD_SCALE, &950);
+        client.set_limit(&asset, &(100 * USD_SCALE));
+
+        let usd = client.check_spend(&asset, &USD_SCALE);
+        assert_eq!(usd, USD_SCALE);
+    }
+
+    #[test]
+    fn test_invalid_amount() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000);
+
+        let (client, _oracle) = setup(&env, 60);
+        let asset = Address::generate(&env);
+        client.set_price(&asset, &USD_SCALE);
+        client.set_limit(&asset, &(100 * USD_SCALE));
+
+        let result = client.try_check_spend(&asset, &0);
+        assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+        let result2 = client.try_check_spend(&asset, &-1);
+        assert_eq!(result2, Err(Ok(Error::InvalidAmount)));
+    }
+}
 /// Storage keys for the contract.
 #[contracttype]
 #[derive(Clone)]
@@ -373,5 +504,17 @@ mod test {
 
         // This should panic because admin auth is required
         client.set_price(&asset, &USD_SCALE);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_unauthorized_set_price_at() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000);
+
+        let (client, _oracle) = setup(&env, 60);
+        let asset = Address::generate(&env);
+
+        client.set_price_at(&asset, &USD_SCALE, &1_000);
     }
 }
