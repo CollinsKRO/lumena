@@ -371,5 +371,5 @@ mod test {
 
         // Without mock_all_auths, calling set_price without admin auth should fail.
         client.set_price(&asset, &USD_SCALE);
-    }
+}
 }
