@@ -3,8 +3,6 @@
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Symbol,
 };
-
-}
 /// Storage keys for the contract.
 #[contracttype]
 #[derive(Clone)]
@@ -373,5 +371,5 @@ mod test {
 
         // Without mock_all_auths, calling set_price without admin auth should fail.
         client.set_price(&asset, &USD_SCALE);
-}
+    }
 }
